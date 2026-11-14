@@ -1,9 +1,0 @@
-com.nova.designsystem-pngs-0 /Users/apple/work/nova/Nova/core/designsystem/build/generated/res/pngs/debug
-com.nova.designsystem-updated_navigation_xml-1 /Users/apple/work/nova/Nova/core/designsystem/build/generated/updated_navigation_xml/debug
-com.nova.designsystem-mergeDebugResources-2 /Users/apple/work/nova/Nova/core/designsystem/build/intermediates/incremental/debug/mergeDebugResources/merged.dir
-com.nova.designsystem-mergeDebugResources-3 /Users/apple/work/nova/Nova/core/designsystem/build/intermediates/incremental/debug/mergeDebugResources/stripped.dir
-com.nova.designsystem-debug-4 /Users/apple/work/nova/Nova/core/designsystem/build/intermediates/merged_res/debug/mergeDebugResources
-com.nova.designsystem-debug-5 /Users/apple/work/nova/Nova/core/designsystem/build/intermediates/packaged_res/debug/packageDebugResources
-com.nova.designsystem-debug-6 /Users/apple/work/nova/Nova/core/designsystem/src/debug/res
-com.nova.designsystem-main-7 /Users/apple/work/nova/Nova/core/designsystem/src/main/res
-gradleHome-0 /Users/apple/.gradle

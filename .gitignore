@@ -1,0 +1,108 @@
+# ==========================================
+# Root .gitignore for Nova Monorepo
+# Covers Android (Nova, NovaDriver), Rust (server), docs, & general tooling
+# ==========================================
+
+# --- Operating System Files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# --- Environment & Secret Files ---
+.env
+.env.*
+*.env
+*.env.local
+*.local
+!*.env.example
+!*.env.template
+
+# --- JetBrains / Android Studio / IntelliJ IDEA ---
+# Root IDE files
+/.idea/
+.idea/workspace.xml
+**/.idea/workspace.xml
+**/.idea/caches/
+**/.idea/libraries/
+**/.idea/modules.xml
+**/.idea/navEditor.xml
+**/.idea/assetWizardSettings.xml
+**/.idea/deploymentTargetSelector.xml
+**/.idea/appInsightsSettings.xml
+**/.idea/deviceManager.xml
+**/.idea/shelf/
+**/.idea/tasks.xml
+**/.idea/dictionaries/
+**/.idea/usage.statistics.xml
+**/.idea/sonarlint/
+
+# Standalone user/workspace XML files
+workspace.xml
+**/workspace.xml
+deploymentTargetSelector.xml
+**/deploymentTargetSelector.xml
+appInsightsSettings.xml
+**/appInsightsSettings.xml
+deviceManager.xml
+**/deviceManager.xml
+
+# IntelliJ project files
+*.iml
+*.iws
+*.ipr
+
+# VS Code & other editors
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+*.bak
+
+# --- Android & Kotlin / Gradle ---
+.gradle/
+**/.gradle/
+build/
+**/build/
+!src/**/build/
+local.properties
+**/local.properties
+captures/
+**/captures/
+.externalNativeBuild/
+**/.externalNativeBuild/
+.cxx/
+**/.cxx/
+.kotlin/
+**/.kotlin/
+
+# Android package & compiled files
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+
+# --- Rust / Cargo (server) ---
+target/
+**/target/
+**/*.rs.bk
+server/target/
+
+# --- Node / Web / Package Managers ---
+node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- General Temporary & Log Files ---
+*.log
+*.tmp
