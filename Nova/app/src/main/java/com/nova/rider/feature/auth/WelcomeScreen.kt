@@ -1,9 +1,5 @@
 package com.nova.rider.feature.auth
 
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,11 +50,10 @@ import com.nova.rider.navigation.SignUpPhone
 fun WelcomeScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().background(c.surface)) {
-        // Panel takes the space the text and buttons don't need (470 dp on the design phone).
-        BoxWithConstraints(
+        Box(
             Modifier
                 .fillMaxWidth()
-                .weight(1f)
+                .height(470.dp)
                 .clip(RoundedCornerShape(bottomStart = 48.dp, bottomEnd = 48.dp))
                 .background(c.primary),
         ) {
@@ -68,12 +63,7 @@ fun WelcomeScreen(nav: Navigator) {
                 "nova", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.4).sp,
                 modifier = Modifier.statusBarsPadding().padding(start = 24.dp, top = 16.dp),
             )
-            // 310 x 270 dp illustration, scaled down when the panel is shorter than designed.
-            val art = minOf((maxHeight - 140.dp) / 270.dp, maxWidth / 330.dp, 1f).coerceAtLeast(0.4f)
-            Box(
-                Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp * art).requiredSize(310.dp, 270.dp)
-                    .graphicsLayer { scaleX = art; scaleY = art; transformOrigin = TransformOrigin(0.5f, 1f) },
-            ) {
+            Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp).width(310.dp).height(270.dp)) {
                 Box(Modifier.offset(0.dp, 30.dp).size(170.dp).clip(CircleShape).background(c.primaryContainer), contentAlignment = Alignment.Center) {
                     Icon(NovaIcons.CarSide, null, tint = c.onPrimaryContainer, modifier = Modifier.width(96.dp).height(70.dp))
                 }
@@ -89,12 +79,12 @@ fun WelcomeScreen(nav: Navigator) {
             }
         }
         Column(
-            Modifier.navigationBarsPadding().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 24.dp),
+            Modifier.weight(1f).navigationBarsPadding().padding(start = 24.dp, end = 24.dp, top = 28.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text("Kia ora.\nWhere to today?", style = MaterialTheme.typography.headlineLarge.copy(fontSize = 38.sp, lineHeight = 42.sp))
             Text("Fair upfront fares across Auckland, with safety built into every ride.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.weight(1f))
             NovaButton("Create account", onClick = { nav.go(SignUpPhone) })
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 NovaOutlinedButton("Log in", onClick = { nav.go(Login) }, modifier = Modifier.weight(1f))

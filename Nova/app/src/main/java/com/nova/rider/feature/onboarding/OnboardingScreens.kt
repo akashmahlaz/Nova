@@ -4,8 +4,6 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -35,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -80,16 +77,10 @@ private fun OnboardingLayout(
                 Spacer(Modifier.height(48.dp))
             }
         }
-        // The illustration is drawn on a 390 x 400 dp canvas and scaled down to whatever space is
-        // left, so the text and the Next button always keep their full size on every phone.
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
-            val scale = minOf(maxWidth / 390.dp, maxHeight / 400.dp, 1f)
-            Box(
-                Modifier.requiredSize(390.dp, 400.dp).graphicsLayer { scaleX = scale; scaleY = scale },
-                content = illustration,
-            )
+        Box(Modifier.fillMaxWidth().height(400.dp).padding(top = 8.dp), contentAlignment = Alignment.TopCenter) {
+            Box(Modifier.width(390.dp).height(400.dp), content = illustration)
         }
-        Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.weight(1f).padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(Modifier.semantics { contentDescription = "Step ${step + 1} of 3" }, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 repeat(3) { i ->
                     val w by animateDpAsState(if (i == step) 28.dp else 8.dp, MaterialTheme.motionScheme.fastSpatialSpec(), label = "dot")
@@ -98,7 +89,7 @@ private fun OnboardingLayout(
             }
             Text(title, style = MaterialTheme.typography.displaySmall)
             Text(body, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp), color = bodyColor)
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.weight(1f))
             bottom()
         }
     }
