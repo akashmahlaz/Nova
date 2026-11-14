@@ -1,0 +1,331 @@
+package com.nova.driver.feature.edge
+
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.nova.designsystem.components.*
+import com.nova.designsystem.icons.NovaIcons
+import com.nova.designsystem.theme.NovaPalette
+import com.nova.designsystem.theme.NovaTheme
+import com.nova.driver.data.*
+import com.nova.driver.feature.common.*
+import com.nova.driver.navigation.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import androidx.compose.runtime.DisposableEffect
+
+@Composable
+fun NoShowScreen(nav: Navigator) {
+    val c = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    Column(
+        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Box(Modifier.size(180.dp).semantics { contentDescription = "Waited 5 minutes" }, contentAlignment = Alignment.Center) {
+                ShapeBadge(NovaShape.Sunny, 180.dp, c.tertiaryContainer)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("5:00", fontSize = 48.sp, lineHeight = 50.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                    Text("WAITED", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = c.onTertiaryContainer)
+                }
+            }
+            Text("${CurrentTrip.rider} hasn't shown up", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), textAlign = TextAlign.Center)
+            Text("You've called twice and waited the full free time. You can cancel now and still get paid.", fontSize = 16.sp, lineHeight = 23.sp, color = c.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 310.dp))
+        }
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.primaryContainer).padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("No-show fee to you", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onPrimaryContainer)
+            Text("$8.00", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+        }
+        Spacer(Modifier.weight(1f))
+        NovaButton("Cancel & collect $8.00", onClick = { nav.goOnline() }, height = 72.dp, textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold))
+        Row(Modifier.offset(y = (-8).dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            ConnectedButton("Call again", 0, 2, onClick = { dial(context, "+6421000000") }, container = c.surfaceContainerHigh)
+            ConnectedButton("Keep waiting", 1, 2, onClick = { nav.back() }, container = c.surfaceContainerHigh)
+        }
+    }
+}
+
+@Composable
+fun RiderCancelledScreen(nav: Navigator) {
+    val c = MaterialTheme.colorScheme
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var progress by remember { mutableStateOf(0.38f) }
+    LaunchedEffect(Unit) {
+        // Back online automatically after ~5 s.
+        while (progress < 1f) { delay(50); progress = (progress + 0.0124f).coerceAtMost(1f) }
+        nav.goOnline()
+    }
+    Box(Modifier.fillMaxSize()) {
+        MapBackdrop { userDot(196f, 300f, c.primary) }
+        ModalBottomSheet(onDismissRequest = { nav.goOnline() }, sheetState = sheet, containerColor = c.surfaceContainer) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    IconTile(NovaIcons.Close, c.tertiaryContainer, c.onTertiaryContainer, size = 64.dp, radius = 22.dp, iconSize = 28.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("${CurrentTrip.rider} cancelled", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp))
+                        Text("Not your fault — your rating isn't affected.", fontSize = 15.sp, color = c.onSurfaceVariant)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.primaryContainer).padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Cancellation fee", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+                        Text("You'd driven 1.1 km toward pickup", fontSize = 13.sp, color = c.onPrimaryContainer)
+                    }
+                    Text("+$6.00", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Back online in ${((1f - progress) * 8).toInt().coerceAtLeast(0) + 1} s", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
+                    androidx.compose.material3.LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(6.dp), color = NovaTheme.colors.cta, trackColor = c.surfaceContainerHighest)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(onClick = { nav.reset(Home) }, shape = RoundedCornerShape(20.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(64.dp)) {
+                        Box(contentAlignment = Alignment.Center) { Text("Take a break", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+                    }
+                    NovaButton("Go online now", onClick = { nav.goOnline() }, modifier = Modifier.weight(1.4f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ConnectionLostScreen(nav: Navigator) {
+    val c = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    // Listen for the network to come back (official ConnectivityManager callback) and resume the trip.
+    DisposableEffect(Unit) {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { nav.back() }
+                }
+            }
+        }
+        cm?.registerDefaultNetworkCallback(callback)
+        onDispose { cm?.unregisterNetworkCallback(callback) }
+    }
+    Box(Modifier.fillMaxSize()) {
+        MapBackdrop { route("M196 640 L196 340 L300 330 L310 120", c.primary, 10f); destination(310f, 118f) }
+        Row(
+            Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp).fillMaxWidth().shadow(8.dp, RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp)).background(c.errorContainer).padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Icon(NovaIcons.WifiOff, null, tint = c.onErrorContainer, modifier = Modifier.size(28.dp))
+            Column {
+                Text("Connection lost", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onErrorContainer)
+                Text("Keep driving — your trip is safe.", fontSize = 14.sp, color = c.onErrorContainer)
+            }
+        }
+        DriverSheet(Modifier.align(Alignment.BottomCenter)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.size(56.dp).clip(CircleShape).background(c.surfaceContainerHigh), contentAlignment = Alignment.Center) { LoadingIndicator(Modifier.size(40.dp), color = c.primary) }
+                Column {
+                    Text("Reconnecting…", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("Last synced 40 s ago", fontSize = 14.sp, color = c.onSurfaceVariant)
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                listOf(NovaIcons.Route to "Route saved — navigation continues", NovaIcons.Clock to "Distance & time recorded on phone", NovaIcons.Receipt to "Fare syncs automatically when back").forEachIndexed { i, (icon, t) ->
+                    Row(Modifier.fillMaxWidth().clip(groupShape(i, 3)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Icon(icon, null, Modifier.size(20.dp)); Text(t, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+            NovaOutlinedButton("Call Nova support", onClick = { dial(context, "0800668200") }, modifier = Modifier.fillMaxWidth(), leadingIcon = NovaIcons.Phone)
+        }
+    }
+}
+
+@Composable
+fun DocExpiredScreen(nav: Navigator) {
+    val c = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
+        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(c.errorContainer)) {
+            ShapeBadge(NovaShape.Burst, 160.dp, c.error.copy(alpha = 0.08f), Modifier.align(Alignment.TopEnd).offset(40.dp, (-30).dp))
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.height(28.dp).clip(RoundedCornerShape(8.dp)).background(c.onErrorContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                    Text("CAN'T GO ONLINE", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.8.sp, color = c.errorContainer)
+                }
+                Text("Your vehicle insurance expired", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), color = c.onErrorContainer)
+                Text("Expired on 12 Nov 2026. Upload the renewed policy and you'll usually be back on the road the same day.", fontSize = 15.sp, lineHeight = 22.sp, color = c.onErrorContainer)
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(Modifier.fillMaxWidth().clip(groupShape(0, 3)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                IconTile(NovaIcons.ShieldCheck, c.errorContainer, c.onErrorContainer)
+                Column { Text("Vehicle insurance", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Expired 2 days ago", fontSize = 13.sp, color = c.error) }
+            }
+            Row(Modifier.fillMaxWidth().clip(groupShape(1, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                IconTile(NovaIcons.Doc, c.tertiaryContainer, c.onTertiaryContainer)
+                Column { Text("Certificate of Fitness", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Expires in 18 days", fontSize = 13.sp, color = c.tertiary) }
+            }
+            Row(Modifier.fillMaxWidth().clip(groupShape(2, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Icon(NovaIcons.Check, null, tint = NovaTheme.colors.onCta) }
+                Column { Text("Licence, rego & P endorsement", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("All valid", fontSize = 13.sp, color = c.onSurfaceVariant) }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        NovaButton("Scan new policy", onClick = { nav.go(Scan) }, height = 96.dp, leadingIcon = NovaIcons.Camera, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp))
+        TextButton(onClick = { nav.go(Scan) }, modifier = Modifier.fillMaxWidth().height(48.dp).offset(y = (-8).dp)) {
+            Text("Upload PDF instead", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.primary)
+        }
+    }
+}
+
+@Composable
+fun SosActiveScreen(nav: Navigator) {
+    val c = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    var dialled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!dialled) { dialled = true; dial(context, "111") } // dialer opens with 111; the driver places the call
+    }
+    val pulse = rememberInfiniteTransition(label = "sos")
+    val t by pulse.animateFloat(0f, 1f, infiniteRepeatable(tween(1600)), label = "t")
+    Column(
+        Modifier.fillMaxSize().background(c.error).statusBarsPadding().navigationBarsPadding().padding(start = 24.dp, end = 24.dp, top = 40.dp, bottom = 36.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(Modifier.height(32.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(NovaIcons.Warning, null, tint = Color.White, modifier = Modifier.size(16.dp))
+            Text("DRIVER EMERGENCY", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.6.sp, color = Color.White)
+        }
+        Box(Modifier.padding(top = 16.dp).size(220.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(220.dp).graphicsLayer { val s = 0.8f + 0.4f * t; scaleX = s; scaleY = s; alpha = 0.35f * (1f - t) }.clip(CircleShape).background(Color.White))
+            ShapeBadge(NovaShape.Sunny, 168.dp, Color.White) { Icon(NovaIcons.Phone, null, tint = c.error, modifier = Modifier.size(64.dp)) }
+        }
+        Text("Connected to 111", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 34.sp, lineHeight = 38.sp), color = Color.White, modifier = Modifier.padding(top = 8.dp))
+        Text("Nova's safety team is also on the line and can see your location, trip and rider details.", fontSize = 16.sp, lineHeight = 23.sp, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(Modifier.fillMaxWidth().clip(groupShape(0, 2)).background(c.errorContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(NovaIcons.Pin, null, tint = c.onErrorContainer); Text("Great South Rd near Ellerslie", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onErrorContainer)
+            }
+            Row(Modifier.fillMaxWidth().clip(groupShape(1, 2)).background(c.errorContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(NovaIcons.Mic, null, tint = c.onErrorContainer); Text("Audio recording on", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onErrorContainer)
+                Box(Modifier.size(10.dp).clip(CircleShape).background(c.error))
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Surface(onClick = { nav.back() }, shape = CircleShape, color = Color.Transparent, contentColor = Color.White, border = BorderStroke(2.dp, Color.White), modifier = Modifier.fillMaxWidth().height(64.dp)) {
+            Box(contentAlignment = Alignment.Center) { Text("End emergency", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold) }
+        }
+    }
+}

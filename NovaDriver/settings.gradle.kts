@@ -23,5 +23,8 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Nova - Driver"
+
+// Nova driver app.
 include(":app")
- 
+// Shared Nova design system (theme, tokens, shapes, components) (same tokens as the rider app).
+include(":core:designsystem")

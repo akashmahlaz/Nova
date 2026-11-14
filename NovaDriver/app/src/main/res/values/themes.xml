@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- System splash (Android 12+ SplashScreen API, back-ported by androidx.core:core-splashscreen).
+         The branded Nova splash screen is drawn in Compose right after this. -->
+    <style name="Theme.Nova.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/nova_primary</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_burst</item>
+        <item name="postSplashScreenTheme">@style/Theme.Nova</item>
+    </style>
 
-    <style name="Theme.NovaDriver" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.Nova" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/nova_surface</item>
+    </style>
 </resources>
