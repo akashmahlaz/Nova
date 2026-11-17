@@ -4,9 +4,10 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -34,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +56,13 @@ import com.nova.rider.navigation.Onboarding2
 import com.nova.rider.navigation.Onboarding3
 import com.nova.rider.navigation.Welcome
 
-/** Shared onboarding layout: wordmark + skip, 400dp illustration, progress, headline, CTA row. */
+/**
+ * Shared responsive onboarding layout:
+ * - Wordmark + Skip top-bar
+ * - Flexible auto-scaling illustration container (`weight(1f)`) that dynamically scales
+ *   on devices with 3-button navigation bars or compact heights without clipping
+ * - Progress indicator, title, body, and un-shrinkable Material 3 Expressive CTA row
+ */
 @Composable
 private fun OnboardingLayout(
     background: Color,
@@ -66,45 +76,147 @@ private fun OnboardingLayout(
     illustration: @Composable BoxScope.() -> Unit,
     bottom: @Composable () -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().background(background).statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("nova", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.5).sp, modifier = Modifier.weight(1f))
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(background)
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+    ) {
+        // Top Bar
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 24.dp, end = 16.dp, top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "nova",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = (-0.5).sp,
+                modifier = Modifier.weight(1f),
+            )
             if (onSkip != null) {
-                TextButton(onClick = onSkip, modifier = Modifier.height(48.dp)) {
-                    Text("Skip", color = accent, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp))
+                TextButton(onClick = onSkip, modifier = Modifier.height(44.dp)) {
+                    Text(
+                        "Skip",
+                        color = accent,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp),
+                    )
                 }
             } else {
-                Spacer(Modifier.height(48.dp))
+                Spacer(Modifier.height(44.dp))
             }
         }
-        Box(Modifier.fillMaxWidth().height(400.dp).padding(top = 8.dp), contentAlignment = Alignment.TopCenter) {
-            Box(Modifier.width(390.dp).height(400.dp), content = illustration)
+
+        // Responsive Illustration Canvas (auto-scales via weight and BoxWithConstraints)
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            val scale = (maxHeight / 390.dp).coerceIn(0.65f, 1.05f)
+            Box(
+                Modifier
+                    .size(390.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin.Center
+                    },
+                content = illustration,
+            )
         }
-        Column(Modifier.weight(1f).padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(Modifier.semantics { contentDescription = "Step ${step + 1} of 3" }, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+
+        // Bottom Content Section: Fixed natural height, guaranteed never squished
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Step Dots
+            Row(
+                Modifier.semantics { contentDescription = "Step ${step + 1} of 3" },
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 repeat(3) { i ->
-                    val w by animateDpAsState(if (i == step) 28.dp else 8.dp, MaterialTheme.motionScheme.fastSpatialSpec(), label = "dot")
-                    Box(Modifier.height(8.dp).width(w).clip(CircleShape).background(if (i == step) accent else inactiveDot))
+                    val w by animateDpAsState(
+                        if (i == step) 28.dp else 8.dp,
+                        MaterialTheme.motionScheme.fastSpatialSpec(),
+                        label = "dot",
+                    )
+                    Box(
+                        Modifier
+                            .height(8.dp)
+                            .width(w)
+                            .clip(CircleShape)
+                            .background(if (i == step) accent else inactiveDot),
+                    )
                 }
             }
-            Text(title, style = MaterialTheme.typography.displaySmall)
-            Text(body, style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp, lineHeight = 25.sp), color = bodyColor)
-            Spacer(Modifier.weight(1f))
+
+            // Headline
+            Text(
+                title,
+                style = MaterialTheme.typography.displaySmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 38.sp,
+                ),
+            )
+
+            // Subtitle Body
+            Text(
+                body,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = 16.sp,
+                    lineHeight = 23.sp,
+                ),
+                color = bodyColor,
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            // Action Row
             bottom()
         }
     }
 }
 
+/**
+ * Material 3 Expressive Action Button:
+ * Preserves the exact icon and colored container design, but enforces a rock-solid,
+ * un-shrinkable 64dp height and proportional width so it never squashes on Samsung navigation bars.
+ */
 @Composable
-private fun NextFab(onClick: () -> Unit, container: Color, round: Boolean) {
+private fun NextFab(
+    onClick: () -> Unit,
+    container: Color,
+    round: Boolean,
+    modifier: Modifier = Modifier,
+) {
     Button(
         onClick = onClick,
-        shapes = ButtonDefaults.shapes(shape = if (round) CircleShape else RoundedCornerShape(32.dp), pressedShape = RoundedCornerShape(24.dp)),
+        shapes = ButtonDefaults.shapes(
+            shape = if (round) CircleShape else RoundedCornerShape(24.dp),
+            pressedShape = RoundedCornerShape(18.dp),
+        ),
         colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = Color.White),
-        modifier = Modifier.size(96.dp),
-        contentPadding = PaddingValues(0.dp),
+        modifier = modifier
+            .height(64.dp)
+            .widthIn(min = if (round) 64.dp else 84.dp),
+        contentPadding = PaddingValues(horizontal = 24.dp),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, pressedElevation = 6.dp),
     ) {
-        Icon(NovaIcons.ArrowRight, contentDescription = "Next", modifier = Modifier.size(34.dp))
+        Icon(
+            NovaIcons.ArrowRight,
+            contentDescription = "Next",
+            modifier = Modifier.size(28.dp),
+        )
     }
 }
 
@@ -149,11 +261,29 @@ fun Onboarding1Screen(nav: Navigator) {
             ShapeBadge(NovaShape.Burst, 56.dp, NovaTheme.colors.coralBright, Modifier.align(Alignment.TopEnd).offset((-44).dp, 50.dp))
         },
         bottom = {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { nav.go(Login) }, modifier = Modifier.weight(1f).height(48.dp)) {
-                    Text("I have an account", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp), modifier = Modifier.fillMaxWidth())
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TextButton(
+                    onClick = { nav.go(Login) },
+                    modifier = Modifier.height(52.dp),
+                ) {
+                    Text(
+                        "I have an account",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                        ),
+                    )
                 }
-                NextFab({ nav.go(Onboarding2) }, accent, round = false)
+                NextFab(
+                    onClick = { nav.go(Onboarding2) },
+                    container = accent,
+                    round = false,
+                )
             }
         },
     )
@@ -192,12 +322,29 @@ fun Onboarding2Screen(nav: Navigator) {
             }
         },
         bottom = {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { nav.back() }, modifier = Modifier.height(48.dp)) {
-                    Text("Back", color = Color(0xFF53433F), style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                TextButton(
+                    onClick = { nav.back() },
+                    modifier = Modifier.height(52.dp),
+                ) {
+                    Text(
+                        "Back",
+                        color = Color(0xFF53433F),
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                        ),
+                    )
                 }
-                Spacer(Modifier.weight(1f))
-                NextFab({ nav.go(Onboarding3) }, accent, round = true)
+                NextFab(
+                    onClick = { nav.go(Onboarding3) },
+                    container = accent,
+                    round = true,
+                )
             }
         },
     )
@@ -242,10 +389,13 @@ fun Onboarding3Screen(nav: Navigator) {
             NovaButton(
                 text = "Get started",
                 onClick = { nav.go(Welcome) },
-                height = 96.dp,
+                height = 64.dp,
                 trailingIcon = NovaIcons.ArrowRight,
                 colors = ButtonDefaults.buttonColors(containerColor = green, contentColor = Color.White),
-                textStyle = MaterialTheme.typography.labelLarge.copy(fontSize = 22.sp),
+                textStyle = MaterialTheme.typography.labelLarge.copy(
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
             )
         },
     )

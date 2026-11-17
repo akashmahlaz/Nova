@@ -8,8 +8,19 @@ import com.google.i18n.phonenumbers.PhoneNumberUtil.PhoneNumberFormat
 import java.text.Collator
 import java.util.Locale
 
+/** Converts a 2-letter ISO 3166-1 alpha-2 code (e.g. "IN", "NZ") into its Unicode flag emoji. */
+fun isoToFlagEmoji(iso: String): String {
+    if (iso.length != 2) return "🌐"
+    val upper = iso.uppercase(Locale.ROOT)
+    val first = Character.codePointAt(upper, 0) - 0x41 + 0x1F1E6
+    val second = Character.codePointAt(upper, 1) - 0x41 + 0x1F1E6
+    return String(Character.toChars(first)) + String(Character.toChars(second))
+}
+
 /** A region the rider can pick. [dial] is the country calling code without "+". */
-data class Country(val iso: String, val name: String, val dial: String)
+data class Country(val iso: String, val name: String, val dial: String) {
+    val flag: String get() = isoToFlagEmoji(iso)
+}
 
 /**
  * Every region and calling code comes from Google's libphonenumber metadata, so nothing is

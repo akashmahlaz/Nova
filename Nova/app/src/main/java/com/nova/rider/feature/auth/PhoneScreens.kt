@@ -58,19 +58,35 @@ import com.nova.rider.navigation.Otp
 import com.nova.rider.navigation.SignUpPhone
 import kotlinx.coroutines.launch
 
-/** Country code button. Shows the selected region and dial code (e.g. "NZ +64") and opens the picker. */
+/** Country code button. Shows the selected region flag and dial code (e.g. "🇳🇿 +64") and opens the picker. */
 @Composable
 internal fun CountryCodeButton(country: Country?, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
         modifier = modifier.height(64.dp),
         shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(1.dp, c.outlineVariant),
+        color = c.surfaceContainerLow,
     ) {
-        Row(Modifier.padding(start = 16.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(country?.let { "${it.iso} +${it.dial}" } ?: "Select", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Icon(NovaIcons.Down, contentDescription = "Change country code", modifier = Modifier.size(18.dp))
+        Row(
+            Modifier.padding(start = 14.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(country?.flag ?: "🌐", fontSize = 22.sp)
+            Text(
+                country?.let { "+${it.dial}" } ?: "Code",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                color = c.onSurface,
+            )
+            Icon(
+                NovaIcons.Down,
+                contentDescription = "Change country code",
+                tint = c.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
         }
     }
 }
@@ -78,7 +94,7 @@ internal fun CountryCodeButton(country: Country?, onClick: () -> Unit, modifier:
 @Composable
 internal fun PhoneRow(country: Country?, value: String, onCountryClick: () -> Unit, onValue: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        CountryCodeButton(country, onClick = onCountryClick, modifier = Modifier.padding(top = 8.dp))
+        CountryCodeButton(country, onClick = onCountryClick)
         NovaTextField(
             value = value,
             onValueChange = { v -> onValue(v.filter { it.isDigit() || it == ' ' }.take(13)) },
