@@ -33,6 +33,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -58,11 +60,14 @@ import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.components.toShape
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaTheme
-import com.nova.rider.data.Sample
-import com.nova.rider.navigation.Home
+import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.navigation.LocationDenied
 import com.nova.rider.navigation.Navigator
+import com.nova.rider.navigation.Otp
 import com.nova.rider.navigation.ProfileSetup
+import kotlinx.coroutines.launch
 
 /** Pre-permission explainer, then the real Android location permission request. */
 @Composable
@@ -110,9 +115,12 @@ fun LocationPermissionScreen(nav: Navigator) {
 @Composable
 fun ProfileSetupScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var first by rememberSaveable { mutableStateOf(Sample.riderName) }
+    var first by rememberSaveable { mutableStateOf("") }
     var last by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().background(c.surface).statusBarsPadding().imePadding()) {
         Column(
             Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 16.dp),
@@ -125,7 +133,7 @@ fun ProfileSetupScreen(nav: Navigator) {
             Text("What should drivers call you?", style = MaterialTheme.typography.headlineLarge)
             Box(Modifier.size(120.dp).align(Alignment.CenterHorizontally)) {
                 ShapeBadge(NovaShape.Cookie, 120.dp, c.tertiaryContainer) {
-                    Text(Sample.riderInitials, fontSize = 40.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                    Text(initialsOf(first, last), fontSize = 40.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
                 }
                 Surface(
                     onClick = { /* photo picker */ },
@@ -151,9 +159,31 @@ fun ProfileSetupScreen(nav: Navigator) {
                 Text("Have a referral code?", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp), color = c.onSurface)
             }
         }
+        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error, modifier = Modifier.padding(horizontal = 24.dp)) }
         NovaButton(
-            "Let's ride", onClick = { nav.reset(Home) }, trailingIcon = NovaIcons.ArrowRight, enabled = first.isNotBlank(),
+            "Let's ride",
+            onClick = {
+                scope.launch {
+                    busy = true
+                    error = null
+                    val address = email.trim().lowercase()
+                    try {
+                        NovaApi.sendOtp("email", address, "signup")
+                        AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), email = address)
+                        nav.go(Otp("email", address, "signup"))
+                    } catch (e: Throwable) {
+                        error = authErrorMessage(e)
+                    } finally {
+                        busy = false
+                    }
+                }
+            },
+            trailingIcon = NovaIcons.ArrowRight,
+            enabled = first.isNotBlank() && email.contains('@') && !busy,
             modifier = Modifier.navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 12.dp),
         )
     }
 }
+
+private fun initialsOf(first: String, last: String): String =
+    listOf(first.trim(), last.trim()).mapNotNull { it.firstOrNull()?.uppercaseChar() }.take(2).joinToString("")

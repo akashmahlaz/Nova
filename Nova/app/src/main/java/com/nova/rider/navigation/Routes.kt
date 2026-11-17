@@ -17,7 +17,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object Welcome : Route
 @Serializable data object SignUpPhone : Route
 @Serializable data object Login : Route
-@Serializable data object Otp : Route
+/** Code entry for one channel. [purpose] is "signup" or "login"; [destination] is the E.164 phone or the email. */
+@Serializable data class Otp(val channel: String, val destination: String, val purpose: String) : Route
 @Serializable data object LocationPermission : Route
 @Serializable data object ProfileSetup : Route
 

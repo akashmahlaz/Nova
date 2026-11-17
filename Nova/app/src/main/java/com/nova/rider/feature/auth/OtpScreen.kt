@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,25 +49,91 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nova.designsystem.components.NovaButton
 import com.nova.designsystem.components.NovaTopBar
-import com.nova.rider.data.Sample
+import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.SignupDraft
+import com.nova.rider.data.auth.VerifyResult
+import com.nova.rider.data.auth.authErrorMessage
+import com.nova.rider.navigation.Home
 import com.nova.rider.navigation.LocationPermission
 import com.nova.rider.navigation.Navigator
+import com.nova.rider.navigation.Otp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private const val CodeLength = 6
+private const val ResendSeconds = 30
 
-/** OTP entry: one hidden text field drives six expressive boxes; the active box morphs to a pill. */
+/**
+ * OTP entry for one channel (phone or email) and purpose (sign-up or login).
+ * Sign-up order: phone code, then the profile step, then the email code, which creates the account.
+ */
 @Composable
-fun OtpScreen(nav: Navigator) {
+fun OtpScreen(nav: Navigator, route: Otp) {
     val c = MaterialTheme.colorScheme
-    var code by rememberSaveable { mutableStateOf("3917") }
-    var seconds by remember { mutableIntStateOf(24) }
+    val isEmail = route.channel == "email"
+    var code by rememberSaveable { mutableStateOf("") }
+    var seconds by remember { mutableIntStateOf(ResendSeconds) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        focus.requestFocus()
-        while (seconds > 0) { delay(1000); seconds-- }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    LaunchedEffect(seconds) {
+        if (seconds > 0) {
+            delay(1000)
+            seconds--
+        }
     }
-    LaunchedEffect(code) { if (code.length == CodeLength) nav.go(LocationPermission) }
+
+    fun verify(value: String) {
+        if (busy || value.length != CodeLength) return
+        scope.launch {
+            busy = true
+            error = null
+            try {
+                when (val result = NovaApi.verifyOtp(route.channel, route.destination, route.purpose, value)) {
+                    is VerifyResult.SignedIn -> {
+                        AuthStore.saveSession(result.session)
+                        nav.reset(Home)
+                    }
+                    is VerifyResult.Proof -> {
+                        if (route.channel == "phone") {
+                            AuthStore.draft = AuthStore.draft.copy(phone = route.destination, phoneProof = result.token)
+                            nav.go(LocationPermission)
+                        } else {
+                            val draft: SignupDraft = AuthStore.draft.copy(email = route.destination, emailProof = result.token)
+                            AuthStore.draft = draft
+                            val session = NovaApi.signup(draft.firstName, draft.lastName, draft.phoneProof, draft.emailProof)
+                            AuthStore.saveSession(session)
+                            AuthStore.draft = SignupDraft()
+                            nav.reset(Home)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                error = authErrorMessage(e)
+                code = ""
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun resend() {
+        scope.launch {
+            error = null
+            try {
+                NovaApi.sendOtp(route.channel, route.destination, route.purpose)
+                seconds = ResendSeconds
+            } catch (e: Throwable) {
+                error = authErrorMessage(e)
+            }
+        }
+    }
+
+    LaunchedEffect(code) { if (code.length == CodeLength) verify(code) }
 
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         NovaTopBar(onBack = { nav.back() })
@@ -74,7 +141,7 @@ fun OtpScreen(nav: Navigator) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Enter the code", style = MaterialTheme.typography.headlineLarge)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Sent to ${Sample.riderPhone} · ", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                    Text("Sent to ${route.destination} · ", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
                     TextButton(onClick = { nav.back() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) {
                         Text("Edit", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
                     }
@@ -91,13 +158,14 @@ fun OtpScreen(nav: Navigator) {
                     }
                 },
             )
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier.height(40.dp).clip(RoundedCornerShape(12.dp)).background(c.secondaryContainer).padding(start = 8.dp, end = 14.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     LoadingIndicator(Modifier.size(24.dp), color = c.primary)
-                    Text("Reading SMS…", style = MaterialTheme.typography.labelMedium, color = c.onSecondaryContainer)
+                    Text(if (isEmail) "Check your inbox…" else "Reading SMS…", style = MaterialTheme.typography.labelMedium, color = c.onSecondaryContainer)
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -112,18 +180,18 @@ fun OtpScreen(nav: Navigator) {
                     Text("Didn't get it?", style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = { seconds = 30 },
-                            enabled = seconds == 0,
+                            onClick = { resend() },
+                            enabled = seconds == 0 && !busy,
                             shapes = ButtonDefaults.shapes(),
                             modifier = Modifier.weight(1f).height(48.dp),
-                        ) { Text("Resend SMS", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
+                        ) { Text(if (isEmail) "Resend email" else "Resend SMS", fontWeight = FontWeight.Bold, fontSize = 15.sp) }
                         OutlinedButton(onClick = { }, shapes = ButtonDefaults.shapes(), modifier = Modifier.weight(1f).height(48.dp)) {
                             Text("Call me instead", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = c.onSurface)
                         }
                     }
                 }
             }
-            NovaButton("Verify", onClick = { nav.go(LocationPermission) })
+            NovaButton("Verify", onClick = { verify(code) }, enabled = code.length == CodeLength && !busy)
         }
     }
 }

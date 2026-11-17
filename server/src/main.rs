@@ -1,26 +1,92 @@
+mod auth;
+mod config;
+mod error;
 
-use axum::{
-    routing::get,
-    Router,
+use std::{sync::Arc, time::Duration};
+
+use axum::{http::StatusCode, routing::get, Router};
+use redis::aio::ConnectionManager;
+use sqlx::postgres::PgPoolOptions;
+use tower_http::{
+    limit::RequestBodyLimitLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
 };
+
+use crate::config::Config;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: sqlx::PgPool,
+    /// OTP cooldowns, hourly send caps and email code storage. Cloning is cheap (shared socket).
+    pub redis: ConnectionManager,
+    pub cfg: Arc<Config>,
+    pub http: reqwest::Client,
+}
 
 #[tokio::main]
 async fn main() {
+    match dotenvy::dotenv() {
+        Ok(path) => println!("Loaded env from: {:?}", path),
+        Err(err) => eprintln!("dotenvy error: {:?}", err),
+    }
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "server=info,tower_http=info".into()),
+        )
+        .init();
+
+    let cfg = match Config::from_env() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("configuration error: {err}");
+            std::process::exit(1);
+        }
+    };
+    if cfg.otp_dev_log {
+        tracing::warn!("OTP_DEV_LOG=true: OTP codes are logged, not sent. Development only.");
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&cfg.database_url)
+        .await
+        .expect("failed to connect to Postgres");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("failed to run migrations");
+
+    let redis_client = redis::Client::open(cfg.redis_url.as_str()).expect("invalid REDIS_URL");
+    let redis = ConnectionManager::new(redis_client)
+        .await
+        .expect("failed to connect to Redis");
+
+    let bind_addr = cfg.bind_addr.clone();
+    let state = AppState {
+        pool,
+        redis,
+        cfg: Arc::new(cfg),
+        http: reqwest::Client::new(),
+    };
+
     let app = Router::new()
-        .route("/health", get(health_check));
+        .route("/health", get(|| async { "Dispatch engine is running!" }))
+        .merge(auth::router())
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+        .layer(TraceLayer::new_for_http())
+        // Requests that stall longer than 15 seconds get a 408 instead of holding a connection.
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15)))
+        // Auth payloads are tiny; anything bigger is rejected before it is read.
+        .layer(RequestBodyLimitLayer::new(64 * 1024))
+        .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("localhost:3000")
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
-        .unwrap();
-
-    println!("dispatch engine running at http://localhost:3000");
-    println!("dispatch engine health http://localhost:3000/health");
-
-    axum::serve(listener, app)
-        .await
-        .unwrap();
-}
-
-async fn health_check() -> &'static str {
-    "Dispatch engine is running!"
+        .expect("failed to bind listener");
+    tracing::info!("nova api listening on http://{bind_addr}");
+    axum::serve(listener, app).await.expect("server error");
 }

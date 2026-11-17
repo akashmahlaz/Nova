@@ -7,9 +7,19 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.nova.rider.data.auth.AuthStore
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
@@ -24,12 +34,34 @@ import com.nova.rider.feature.support.*
 import com.nova.rider.feature.trip.*
 import com.nova.rider.navigation.*
 
+private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+
+/**
+ * Debug builds reach the dev API on the Mac's LAN address. On targetSdk 37 Android blocks that
+ * traffic until the user grants ACCESS_LOCAL_NETWORK, so ask once at launch. Release builds skip this.
+ */
+@Composable
+private fun EnsureLocalNetworkAccess() {
+    if (!BuildConfig.DEBUG) return
+    val context = LocalContext.current
+    var granted by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, LOCAL_NETWORK_PERMISSION) == PackageManager.PERMISSION_GRANTED)
+    }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
+    LaunchedEffect(Unit) {
+        if (!granted) launcher.launch(LOCAL_NETWORK_PERMISSION)
+    }
+}
+
 /**
  * Root of the rider app: one Navigation 3 back stack (saved across process death because every
  * [Route] is @Serializable) and one entry per screen.
  */
 @Composable
 fun NovaRiderApp() {
+    val context = LocalContext.current
+    remember(context) { AuthStore.init(context) }
+    EnsureLocalNetworkAccess()
     val backStack = rememberNavBackStack(Splash)
     val nav = remember(backStack) { Navigator(backStack) }
     val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<androidx.compose.ui.unit.IntOffset>()
@@ -64,7 +96,7 @@ fun NovaRiderApp() {
             entry<Welcome> { WelcomeScreen(nav) }
             entry<SignUpPhone> { SignUpPhoneScreen(nav) }
             entry<Login> { LoginScreen(nav) }
-            entry<Otp> { OtpScreen(nav) }
+            entry<Otp> { key -> OtpScreen(nav, key) }
             entry<LocationPermission> { LocationPermissionScreen(nav) }
             entry<ProfileSetup> { ProfileSetupScreen(nav) }
             entry<Home> { HomeScreen(nav) }

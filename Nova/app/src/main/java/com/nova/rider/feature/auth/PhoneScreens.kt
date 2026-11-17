@@ -24,6 +24,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,33 +46,39 @@ import com.nova.designsystem.components.NovaTopBar
 import com.nova.designsystem.components.OrDivider
 import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.icons.NovaIcons
+import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.data.auth.Country
+import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.PhoneRegions
+import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.navigation.Home
 import com.nova.rider.navigation.Login
 import com.nova.rider.navigation.Navigator
 import com.nova.rider.navigation.Otp
 import com.nova.rider.navigation.SignUpPhone
+import kotlinx.coroutines.launch
 
-/** Country code selector (NZ +64 default). */
+/** Country code button. Shows the selected region and dial code (e.g. "NZ +64") and opens the picker. */
 @Composable
-internal fun CountryCodeButton(modifier: Modifier = Modifier) {
+internal fun CountryCodeButton(country: Country?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
-        onClick = { /* country picker sheet */ },
+        onClick = onClick,
         modifier = modifier.height(64.dp),
         shape = RoundedCornerShape(16.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         color = MaterialTheme.colorScheme.surface,
     ) {
         Row(Modifier.padding(start = 16.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("NZ +64", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(country?.let { "${it.iso} +${it.dial}" } ?: "Select", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Icon(NovaIcons.Down, contentDescription = "Change country code", modifier = Modifier.size(18.dp))
         }
     }
 }
 
 @Composable
-internal fun PhoneRow(value: String, onValue: (String) -> Unit) {
+internal fun PhoneRow(country: Country?, value: String, onCountryClick: () -> Unit, onValue: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        CountryCodeButton(Modifier.padding(top = 8.dp))
+        CountryCodeButton(country, onClick = onCountryClick, modifier = Modifier.padding(top = 8.dp))
         NovaTextField(
             value = value,
             onValueChange = { v -> onValue(v.filter { it.isDigit() || it == ' ' }.take(13)) },
@@ -99,10 +107,15 @@ internal fun TermsText() {
     )
 }
 
-/** Sign up · step 1: mobile number. */
+/** Sign up · step 1: mobile number. Sends a sign-up code by SMS. */
 @Composable
 fun SignUpPhoneScreen(nav: Navigator) {
-    var phone by rememberSaveable { mutableStateOf("21 123 4567") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showCountries by remember { mutableStateOf(false) }
+    val country = AuthStore.country
+    val scope = rememberCoroutineScope()
     val c = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         NovaTopBar(onBack = { nav.back() })
@@ -118,21 +131,51 @@ fun SignUpPhoneScreen(nav: Navigator) {
                 Text("What's your\nnumber?", style = MaterialTheme.typography.headlineLarge)
                 Text("We'll text a 6-digit code to verify it's you.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
             }
-            PhoneRow(phone) { phone = it }
+            PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
             OrDivider()
             NovaOutlinedButton("Continue with email", onClick = { }, leadingIcon = NovaIcons.Mail, modifier = Modifier.fillMaxWidth())
         }
         Column(Modifier.navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
             TermsText()
-            NovaButton("Send code", onClick = { nav.go(Otp) }, enabled = phone.count { it.isDigit() } >= 8)
+            val e164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
+            NovaButton("Send code", enabled = e164 != null && !busy, onClick = {
+                val number = e164 ?: return@NovaButton
+                scope.launch {
+                    busy = true
+                    error = null
+                    try {
+                        NovaApi.sendOtp("phone", number, "signup")
+                        nav.go(Otp("phone", number, "signup"))
+                    } catch (e: Throwable) {
+                        error = authErrorMessage(e)
+                    } finally {
+                        busy = false
+                    }
+                }
+            })
         }
+    }
+    if (showCountries) {
+        CountryPickerSheet(
+            selected = country,
+            onPick = { AuthStore.selectCountry(it); showCountries = false },
+            onDismiss = { showCountries = false },
+        )
     }
 }
 
-/** Returning rider log in, with passkey (Credential Manager) as a one-tap alternative. */
+/** Returning rider log in. Phone by default; "Continue with email" switches to an email code. */
 @Composable
 fun LoginScreen(nav: Navigator) {
-    var phone by rememberSaveable { mutableStateOf("21 123 4567") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var useEmail by rememberSaveable { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showCountries by remember { mutableStateOf(false) }
+    val country = AuthStore.country
+    val scope = rememberCoroutineScope()
     val c = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         NovaTopBar(onBack = { nav.back() })
@@ -145,10 +188,45 @@ fun LoginScreen(nav: Navigator) {
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Welcome back", style = MaterialTheme.typography.headlineLarge)
-                Text("Log in with the mobile number on your Nova account.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                Text(
+                    if (useEmail) "Log in with the email on your Nova account." else "Log in with the mobile number on your Nova account.",
+                    style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant,
+                )
             }
-            PhoneRow(phone) { phone = it }
-            NovaButton("Send code", onClick = { nav.go(Otp) })
+            if (useEmail) {
+                NovaTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = "Email",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                )
+            } else {
+                PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+            }
+            val phoneE164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
+            NovaButton("Send code", enabled = !busy && (if (useEmail) email.contains('@') else phoneE164 != null), onClick = {
+                scope.launch {
+                    busy = true
+                    error = null
+                    val channel = if (useEmail) "email" else "phone"
+                    val destination = if (useEmail) email.trim().lowercase() else phoneE164.orEmpty()
+                    try {
+                        NovaApi.sendOtp(channel, destination, "login")
+                        nav.go(Otp(channel, destination, "login"))
+                    } catch (e: Throwable) {
+                        error = authErrorMessage(e)
+                    } finally {
+                        busy = false
+                    }
+                }
+            })
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+            NovaOutlinedButton(
+                if (useEmail) "Use phone instead" else "Continue with email",
+                onClick = { useEmail = !useEmail; error = null },
+                leadingIcon = NovaIcons.Mail,
+                modifier = Modifier.fillMaxWidth(),
+            )
             OrDivider()
             Surface(
                 onClick = { nav.reset(Home) },
@@ -175,5 +253,11 @@ fun LoginScreen(nav: Navigator) {
             TextButton(onClick = { nav.go(SignUpPhone) }) { Text("Create an account", style = MaterialTheme.typography.labelLarge) }
         }
     }
+    if (showCountries) {
+        CountryPickerSheet(
+            selected = country,
+            onPick = { AuthStore.selectCountry(it); showCountries = false },
+            onDismiss = { showCountries = false },
+        )
+    }
 }
-
