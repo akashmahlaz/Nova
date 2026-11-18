@@ -1,5 +1,6 @@
 package com.nova.rider.feature.auth
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +25,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -31,6 +33,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +41,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.nova.designsystem.components.NovaButton
 import com.nova.designsystem.components.NovaOutlinedButton
 import com.nova.designsystem.components.NovaShape
@@ -52,14 +56,28 @@ import com.nova.rider.navigation.SignUpPhone
 @Composable
 fun WelcomeScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val view = LocalView.current
+
+    // Set white status bar icons on top of the blue banner, restore dark icons on exit
+    if (!view.isInEditMode) {
+        DisposableEffect(Unit) {
+            val window = (view.context as? Activity)?.window
+            val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
+            val prevLightStatus = insetsController?.isAppearanceLightStatusBars ?: true
+            insetsController?.isAppearanceLightStatusBars = false
+            onDispose {
+                insetsController?.isAppearanceLightStatusBars = prevLightStatus
+            }
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
             .background(c.surface)
-            .statusBarsPadding()
             .navigationBarsPadding(),
     ) {
-        // Hero Blue Banner: Responsive height with weight(1.1f) and BoxWithConstraints
+        // Hero Blue Banner: Extends fully behind the status bar (no statusBarsPadding on root)
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
@@ -72,13 +90,16 @@ fun WelcomeScreen(nav: Navigator) {
             ShapeBadge(NovaShape.Burst, 300.dp, Color.White, Modifier.offset((-70).dp, (-60).dp).alpha(0.12f))
             ShapeBadge(NovaShape.Cookie, 240.dp, Color.White, Modifier.align(Alignment.TopEnd).offset(80.dp, 200.dp).alpha(0.1f))
 
+            // Logo sits safely below the system status bar icons
             Text(
                 "nova",
                 color = Color.White,
                 fontSize = 26.sp,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = (-0.4).sp,
-                modifier = Modifier.padding(start = 24.dp, top = 16.dp),
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(start = 24.dp, top = 8.dp),
             )
 
             // Centered and auto-scaled illustration
