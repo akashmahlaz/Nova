@@ -1,5 +1,6 @@
 package com.nova.rider.feature.onboarding
 
+import android.app.Activity
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,12 +40,14 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import com.nova.designsystem.components.NovaButton
 import com.nova.designsystem.components.NovaShape
 import com.nova.designsystem.components.ShapeBadge
@@ -76,18 +80,33 @@ private fun OnboardingLayout(
     illustration: @Composable BoxScope.() -> Unit,
     bottom: @Composable () -> Unit,
 ) {
+    val view = LocalView.current
+
+    // Ensure dark system status bar icons on light onboarding backgrounds
+    if (!view.isInEditMode) {
+        DisposableEffect(Unit) {
+            val window = (view.context as? Activity)?.window
+            val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
+            val prevLightStatus = insetsController?.isAppearanceLightStatusBars ?: true
+            insetsController?.isAppearanceLightStatusBars = true
+            onDispose {
+                insetsController?.isAppearanceLightStatusBars = prevLightStatus
+            }
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
             .background(background)
-            .statusBarsPadding()
             .navigationBarsPadding(),
     ) {
-        // Top Bar
+        // Top Bar sits cleanly below the status bar icons
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 24.dp, end = 16.dp, top = 4.dp),
+                .statusBarsPadding()
+                .padding(start = 24.dp, end = 16.dp, top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
