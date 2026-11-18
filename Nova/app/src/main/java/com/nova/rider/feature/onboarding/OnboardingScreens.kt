@@ -363,8 +363,8 @@ fun Onboarding3Screen(nav: Navigator) {
         inactiveDot = Color(0xFFBFC9C1),
         onSkip = null,
         illustration = {
-            ShapeBadge(NovaShape.Burst, 320.dp, NovaTheme.colors.successContainer, Modifier.offset(35.dp, 40.dp))
-            Column(Modifier.offset(60.dp, 110.dp).width(270.dp).rotate(-4f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            ShapeBadge(NovaShape.Burst, 320.dp, NovaTheme.colors.successContainer, Modifier.offset(28.dp, 40.dp))
+            Column(Modifier.offset(48.dp, 110.dp).width(270.dp).rotate(-4f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 PayCard(RoundedCornerShape(28.dp, 28.dp, 8.dp, 8.dp), Color.White) {
                     Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(green), contentAlignment = Alignment.Center) {
                         Text("GPay", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
