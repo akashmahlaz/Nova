@@ -142,53 +142,105 @@ internal fun TermsText() {
     )
 }
 
-/** Sign up · step 1: mobile number. Sends a sign-up code by SMS. */
+/** Sign up · step 1: mobile number or email. Sends a sign-up verification code. */
 @Composable
 fun SignUpPhoneScreen(nav: Navigator) {
     var phone by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var useEmail by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCountries by remember { mutableStateOf(false) }
     val country = AuthStore.country
     val scope = rememberCoroutineScope()
     val c = MaterialTheme.colorScheme
+
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         NovaTopBar(onBack = { nav.back() })
         Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ShapeBadge(NovaShape.Cookie, 64.dp, c.primaryContainer) {
-                    Icon(NovaIcons.Smartphone, null, tint = c.onPrimaryContainer, modifier = Modifier.size(28.dp))
+                    Icon(
+                        if (useEmail) NovaIcons.Mail else NovaIcons.Smartphone,
+                        null,
+                        tint = c.onPrimaryContainer,
+                        modifier = Modifier.size(28.dp),
+                    )
                 }
                 Spacer(Modifier.height(8.dp))
-                Text("What's your\nnumber?", style = MaterialTheme.typography.headlineLarge)
-                Text("We'll text a 6-digit code to verify it's you.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                Text(
+                    if (useEmail) "What's your\nemail?" else "What's your\nnumber?",
+                    style = MaterialTheme.typography.headlineLarge,
+                )
+                Text(
+                    if (useEmail) "We'll email a 6-digit code to verify your address." else "We'll text a 6-digit code to verify it's you.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = c.onSurfaceVariant,
+                )
             }
-            PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+
+            if (useEmail) {
+                NovaTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = "Email address",
+                    placeholder = "you@example.com",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                )
+            } else {
+                PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+            }
+
             OrDivider()
-            NovaOutlinedButton("Continue with email", onClick = { }, leadingIcon = NovaIcons.Mail, modifier = Modifier.fillMaxWidth())
+
+            NovaOutlinedButton(
+                if (useEmail) "Use phone instead" else "Continue with email",
+                onClick = {
+                    useEmail = !useEmail
+                    error = null
+                },
+                leadingIcon = if (useEmail) NovaIcons.Smartphone else NovaIcons.Mail,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
-        Column(Modifier.navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+
+        Column(
+            Modifier
+                .navigationBarsPadding()
+                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
             error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
             TermsText()
             val e164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
-            NovaButton("Send code", enabled = e164 != null && !busy, onClick = {
-                val number = e164 ?: return@NovaButton
-                scope.launch {
-                    busy = true
-                    error = null
-                    try {
-                        NovaApi.sendOtp("phone", number, "signup")
-                        nav.go(Otp("phone", number, "signup"))
-                    } catch (e: Throwable) {
-                        error = authErrorMessage(e)
-                    } finally {
-                        busy = false
+            val canSend = if (useEmail) email.contains('@') && !busy else (e164 != null && !busy)
+
+            NovaButton(
+                "Send code",
+                enabled = canSend,
+                onClick = {
+                    val channel = if (useEmail) "email" else "phone"
+                    val destination = if (useEmail) email.trim().lowercase() else (e164 ?: return@NovaButton)
+                    scope.launch {
+                        busy = true
+                        error = null
+                        try {
+                            NovaApi.sendOtp(channel, destination, "signup")
+                            nav.go(Otp(channel, destination, "signup"))
+                        } catch (e: Throwable) {
+                            error = authErrorMessage(e)
+                        } finally {
+                            busy = false
+                        }
                     }
-                }
-            })
+                },
+            )
         }
     }
     if (showCountries) {
