@@ -70,6 +70,7 @@ import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaTheme
 import com.nova.rider.data.auth.AuthStore
 import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.PhoneRegions
 import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.navigation.LocationDenied
 import com.nova.rider.navigation.Navigator
@@ -96,7 +97,7 @@ fun LocationPermissionScreen(nav: Navigator) {
     }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.any { it }) nav.go(ProfileSetup) else nav.go(LocationDenied)
+        if (result.values.any { it } || AuthStore.session == null) nav.go(ProfileSetup) else nav.go(LocationDenied)
     }
 
     BoxWithConstraints(
@@ -176,7 +177,12 @@ fun LocationPermissionScreen(nav: Navigator) {
                     NovaButton("Allow location", onClick = {
                         launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
                     })
-                    TextButton(onClick = { nav.go(LocationDenied) }, modifier = Modifier.height(48.dp)) {
+                    TextButton(
+                        onClick = {
+                            if (AuthStore.session == null) nav.go(ProfileSetup) else nav.go(LocationDenied)
+                        },
+                        modifier = Modifier.height(48.dp),
+                    ) {
                         Text("Enter pickup manually", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
                     }
                 }
@@ -185,7 +191,7 @@ fun LocationPermissionScreen(nav: Navigator) {
     }
 }
 
-/** Sign-up final step: name, email, optional referral. */
+/** Sign-up final step: name, secondary contact info (phone or email), optional referral. */
 @Composable
 fun ProfileSetupScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
@@ -203,9 +209,15 @@ fun ProfileSetupScreen(nav: Navigator) {
         }
     }
 
-    var first by rememberSaveable { mutableStateOf("") }
-    var last by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
+    val draft = AuthStore.draft
+    val isEmailFirst = draft.emailProof.isNotBlank() && draft.phoneProof.isBlank()
+
+    var first by rememberSaveable { mutableStateOf(draft.firstName) }
+    var last by rememberSaveable { mutableStateOf(draft.lastName) }
+    var email by rememberSaveable { mutableStateOf(draft.email) }
+    var phone by rememberSaveable { mutableStateOf(draft.phone) }
+    var showCountries by remember { mutableStateOf(false) }
+    val country = AuthStore.country
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -257,13 +269,22 @@ fun ProfileSetupScreen(nav: Navigator) {
                         NovaTextField(last, { last = it }, "Last name", Modifier.weight(1f), placeholder = "Optional")
                     }
 
-                    NovaTextField(
-                        email,
-                        { email = it },
-                        "Email for receipts",
-                        placeholder = "you@example.co.nz",
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    )
+                    if (isEmailFirst) {
+                        // User verified email on Step 1. Collect mobile number to reach them during rides.
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Mobile number for pickups & trips", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant)
+                            PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+                        }
+                    } else {
+                        // User verified phone on Step 1. Collect email for trip invoices and receipts.
+                        NovaTextField(
+                            email,
+                            { email = it },
+                            "Email for receipts",
+                            placeholder = "you@example.com",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        )
+                    }
 
                     OutlinedButton(
                         onClick = { },
@@ -282,17 +303,32 @@ fun ProfileSetupScreen(nav: Navigator) {
                     modifier = Modifier.padding(top = 16.dp),
                 ) {
                     error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+
+                    val e164 = if (isEmailFirst) country?.let { PhoneRegions.toE164(it.iso, phone) } else null
+                    val canProceed = if (isEmailFirst) {
+                        first.isNotBlank() && e164 != null && !busy
+                    } else {
+                        first.isNotBlank() && email.contains('@') && !busy
+                    }
+
                     NovaButton(
                         "Let's ride",
                         onClick = {
                             scope.launch {
                                 busy = true
                                 error = null
-                                val address = email.trim().lowercase()
                                 try {
-                                    NovaApi.sendOtp("email", address, "signup")
-                                    AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), email = address)
-                                    nav.go(Otp("email", address, "signup"))
+                                    if (isEmailFirst) {
+                                        val number = e164 ?: return@launch
+                                        NovaApi.sendOtp("phone", number, "signup")
+                                        AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), phone = number)
+                                        nav.go(Otp("phone", number, "signup"))
+                                    } else {
+                                        val address = email.trim().lowercase()
+                                        NovaApi.sendOtp("email", address, "signup")
+                                        AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), email = address)
+                                        nav.go(Otp("email", address, "signup"))
+                                    }
                                 } catch (e: Throwable) {
                                     error = authErrorMessage(e)
                                 } finally {
@@ -301,12 +337,20 @@ fun ProfileSetupScreen(nav: Navigator) {
                             }
                         },
                         trailingIcon = NovaIcons.ArrowRight,
-                        enabled = first.isNotBlank() && email.contains('@') && !busy,
+                        enabled = canProceed,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         }
+    }
+
+    if (showCountries) {
+        CountryPickerSheet(
+            selected = country,
+            onPick = { AuthStore.selectCountry(it); showCountries = false },
+            onDismiss = { showCountries = false },
+        )
     }
 }
 

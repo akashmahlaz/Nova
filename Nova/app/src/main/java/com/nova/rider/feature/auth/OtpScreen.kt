@@ -196,10 +196,16 @@ fun OtpScreen(nav: Navigator, route: Otp) {
                     is VerifyResult.Proof -> {
                         if (route.channel == "phone") {
                             AuthStore.draft = AuthStore.draft.copy(phone = route.destination, phoneProof = result.token)
+                        } else {
+                            AuthStore.draft = AuthStore.draft.copy(email = route.destination, emailProof = result.token)
+                        }
+
+                        // If user hasn't completed name and secondary contact step yet, advance to Location & Profile setup
+                        if (AuthStore.draft.firstName.isBlank()) {
                             nav.go(LocationPermission)
                         } else {
-                            val draft: SignupDraft = AuthStore.draft.copy(email = route.destination, emailProof = result.token)
-                            AuthStore.draft = draft
+                            // All details & both proofs verified -> complete account creation
+                            val draft: SignupDraft = AuthStore.draft
                             val session = NovaApi.signup(draft.firstName, draft.lastName, draft.phoneProof, draft.emailProof)
                             AuthStore.saveSession(session)
                             AuthStore.draft = SignupDraft()
