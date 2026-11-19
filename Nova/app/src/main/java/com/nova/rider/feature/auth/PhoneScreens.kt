@@ -1,5 +1,6 @@
 package com.nova.rider.feature.auth
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,34 +61,36 @@ import com.nova.rider.navigation.Otp
 import com.nova.rider.navigation.SignUpPhone
 import kotlinx.coroutines.launch
 
-/** Country code button. Shows the selected region flag and dial code (e.g. "🇳🇿 +64") and opens the picker. */
+/** Country code button. Clean, quiet, and perfectly matching the phone input height & styling. */
 @Composable
 internal fun CountryCodeButton(country: Country?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
-        modifier = modifier.height(64.dp),
+        modifier = modifier.height(56.dp),
         shape = RoundedCornerShape(16.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, c.outlineVariant),
-        color = c.surfaceContainerLow,
+        border = BorderStroke(1.dp, c.outline),
+        color = c.surface,
     ) {
         Row(
-            Modifier.padding(start = 14.dp, end = 12.dp),
+            Modifier.padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(country?.flag ?: "🌐", fontSize = 22.sp)
+            Text(country?.flag ?: "🌐", fontSize = 20.sp)
             Text(
                 country?.let { "+${it.dial}" } ?: "Code",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                ),
                 color = c.onSurface,
             )
             Icon(
                 NovaIcons.Down,
                 contentDescription = "Change country code",
                 tint = c.onSurfaceVariant,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(14.dp),
             )
         }
     }
@@ -93,14 +98,28 @@ internal fun CountryCodeButton(country: Country?, onClick: () -> Unit, modifier:
 
 @Composable
 internal fun PhoneRow(country: Country?, value: String, onCountryClick: () -> Unit, onValue: (String) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    val c = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         CountryCodeButton(country, onClick = onCountryClick)
-        NovaTextField(
+        OutlinedTextField(
             value = value,
             onValueChange = { v -> onValue(v.filter { it.isDigit() || it == ' ' }.take(13)) },
-            label = "Mobile number",
+            modifier = Modifier.weight(1f).height(56.dp),
+            placeholder = { Text("Mobile number", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant) },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold, fontSize = 16.sp),
+            singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedBorderColor = c.outline,
+                focusedBorderColor = c.primary,
+                unfocusedContainerColor = c.surface,
+                focusedContainerColor = c.surface,
+            ),
         )
     }
 }
