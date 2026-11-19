@@ -22,6 +22,9 @@ kotlinxCoroutines = "1.11.0"
 # Google's phone number metadata: regions, dial codes, validation and E.164 formatting
 libphonenumber = "9.0.43"
 
+# Google Play Services: SMS Retriever & SMS User Consent API (zero-permission auto OTP)
+playServicesAuthApiPhone = "18.1.0"
+
 # Testing
 junit = "4.13.2"
 
