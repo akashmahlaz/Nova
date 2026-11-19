@@ -1,6 +1,14 @@
 package com.nova.rider.feature.auth
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -48,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -55,7 +64,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import com.google.android.gms.auth.api.phone.SmsRetriever
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.common.api.Status
 import com.nova.designsystem.components.NovaButton
 import com.nova.designsystem.components.NovaTopBar
 import com.nova.rider.data.auth.AuthStore
@@ -88,6 +101,65 @@ fun OtpScreen(nav: Navigator, route: Otp) {
     val focus = remember { FocusRequester() }
     val scope = rememberCoroutineScope()
     val view = LocalView.current
+    val context = LocalContext.current
+
+    // SMS User Consent API: automatically listens for incoming OTP SMS and populates the 6 digits
+    val consentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            val message = result.data?.getStringExtra(SmsRetriever.EXTRA_SMS_MESSAGE)
+            val extracted = Regex("\\b\\d{6}\\b").find(message ?: "")?.value
+            if (!extracted.isNullOrBlank()) {
+                code = extracted
+            }
+        }
+    }
+
+    if (!isEmail) {
+        DisposableEffect(context) {
+            // Start SMS User Consent client (listens for 5 mins for incoming SMS with a code)
+            SmsRetriever.getClient(context).startSmsUserConsent(null)
+
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context, intent: Intent) {
+                    if (SmsRetriever.SMS_RETRIEVED_ACTION == intent.action) {
+                        val extras = intent.extras ?: return
+                        val status = extras.get(SmsRetriever.EXTRA_STATUS) as? Status
+                        if (status?.statusCode == CommonStatusCodes.SUCCESS) {
+                            val consentIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                extras.getParcelable(SmsRetriever.EXTRA_CONSENT_INTENT, Intent::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                extras.getParcelable(SmsRetriever.EXTRA_CONSENT_INTENT) as? Intent
+                            }
+                            if (consentIntent != null) {
+                                try {
+                                    consentLauncher.launch(consentIntent)
+                                } catch (_: ActivityNotFoundException) {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            val filter = IntentFilter(SmsRetriever.SMS_RETRIEVED_ACTION)
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                SmsRetriever.SEND_PERMISSION,
+                null,
+                ContextCompat.RECEIVER_EXPORTED,
+            )
+
+            onDispose {
+                try {
+                    context.unregisterReceiver(receiver)
+                } catch (_: IllegalArgumentException) {}
+            }
+        }
+    }
 
     // Ensure dark system status bar icons on light OTP background
     if (!view.isInEditMode) {
@@ -145,6 +217,9 @@ fun OtpScreen(nav: Navigator, route: Otp) {
     }
 
     fun resend() {
+        if (!isEmail) {
+            SmsRetriever.getClient(context).startSmsUserConsent(null)
+        }
         scope.launch {
             error = null
             try {
