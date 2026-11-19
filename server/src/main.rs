@@ -73,6 +73,34 @@ async fn main() {
     };
 
     let app = Router::new()
+        .route("/", get(|| async {
+            axum::response::Html(r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nova API</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 3rem auto; padding: 0 1rem; text-align: center; }
+        h1 { color: #2563eb; }
+        .status { color: #16a34a; font-weight: bold; }
+        .endpoint { background: #f3f4f6; padding: 0.5rem; margin: 0.5rem 0; border-radius: 4px; font-family: monospace; }
+        a { color: #2563eb; }
+    </style>
+</head>
+<body>
+    <h1>Nova API</h1>
+    <p class="status">✓ Service is running</p>
+    <p>Backend API for Nova Rider</p>
+    <div class="endpoint"><a href="/health">/health</a> - Health check</div>
+    <div class="endpoint"><a href="/v1/auth/otp/send">/v1/auth/otp/send</a> - Send OTP</div>
+    <div class="endpoint"><a href="/v1/auth/otp/verify">/v1/auth/otp/verify</a> - Verify OTP</div>
+    <div class="endpoint"><a href="/v1/me">/v1/me</a> - Current user</div>
+</body>
+</html>
+"#)
+        }))
         .route("/health", get(|| async { "Dispatch engine is running! 🏃" }))
         .merge(auth::router())
         .layer(PropagateRequestIdLayer::x_request_id())
