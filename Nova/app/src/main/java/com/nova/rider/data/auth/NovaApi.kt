@@ -97,7 +97,79 @@ object NovaApi {
         Unit
     }
 
+    // ---------- passkeys ----------
+
+    /** Authenticated: returns the WebAuthn creation challenge as a JSON string for Credential Manager. */
+    suspend fun passkeyRegisterOptions(): String = withContext(Dispatchers.IO) {
+        val res = requestAuth("POST", "/v1/auth/passkey/register/options", null)
+        res.toString()
+    }
+
+    /** Authenticated: sends the credential produced by `createPasskey()` back to the server. */
+    suspend fun passkeyRegisterVerify(credential: String) = withContext(Dispatchers.IO) {
+        requestAuth(
+            "POST",
+            "/v1/auth/passkey/register/verify",
+            buildJsonObject { put("credential", credential) },
+        )
+        Unit
+    }
+
+    /** Returns the assertion challenge plus the opaque state token the client must echo back. */
+    suspend fun passkeyLoginOptions(): Pair<String, String> = withContext(Dispatchers.IO) {
+        val res = request("POST", "/v1/auth/passkey/login/options", null)
+        val options = res.getValue("options").toString()
+        val token = res.str("state_token")
+        options to token
+    }
+
+    /** Sends the assertion produced by `getPasskey()` back to the server; returns a session. */
+    suspend fun passkeyLoginVerify(credential: String, stateToken: String): Session = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("credential", credential)
+            put("state_token", stateToken)
+        }
+        request("POST", "/v1/auth/passkey/login/verify", body).toSession()
+    }
+
     private fun JsonObject.toSession(): Session = json.decodeFromJsonElement(Session.serializer(), this)
+
+    /** Like [request] but adds `Authorization: Bearer <session.accessToken>` when signed in. */
+    private fun requestAuth(method: String, path: String, body: JsonObject?): JsonObject {
+        val fullUrl = API_BASE_URL + path
+        android.util.Log.d("NovaApi", "--> $method $fullUrl body=$body")
+        val conn = (URL(fullUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            setRequestProperty("Accept", "application/json")
+            AuthStore.session?.accessToken?.let {
+                setRequestProperty("Authorization", "Bearer $it")
+            }
+        }
+        try {
+            if (body != null) {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            android.util.Log.d("NovaApi", "<-- $code $fullUrl response: $text")
+            val parsed = if (text.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(text).jsonObject
+            if (code !in 200..299) {
+                val error = parsed["error"]?.jsonPrimitive?.contentOrNull ?: "http_$code"
+                throw ApiException(error, conn.getHeaderField("Retry-After")?.toIntOrNull())
+            }
+            return parsed
+        } catch (e: IOException) {
+            android.util.Log.e("NovaApi", "Network error connecting to $fullUrl", e)
+            throw ApiException("network_error")
+        } finally {
+            conn.disconnect()
+        }
+    }
 
     private fun JsonObject.str(key: String): String = getValue(key).jsonPrimitive.content
 

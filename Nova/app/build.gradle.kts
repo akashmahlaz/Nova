@@ -30,8 +30,18 @@ android {
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("release-key.jks")
+            storePassword = localProps.getProperty("keystore.password")
+            keyAlias = localProps.getProperty("key.alias")
+            keyPassword = localProps.getProperty("key.password")
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             optimization {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
@@ -70,6 +80,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.libphonenumber)
     implementation(libs.google.play.services.auth.api.phone)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.kotlinx.coroutines.android)
 
     debugImplementation(libs.androidx.compose.ui.tooling)

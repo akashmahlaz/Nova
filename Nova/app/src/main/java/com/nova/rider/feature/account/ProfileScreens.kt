@@ -37,6 +37,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +48,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -69,6 +72,10 @@ import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
 import com.nova.rider.data.Sample
+import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.PasskeyManager
+import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.feature.common.TabPage
 import com.nova.rider.navigation.DriverCancelled
 import com.nova.rider.navigation.EditProfile
@@ -90,17 +97,34 @@ import com.nova.rider.navigation.Settings
 import com.nova.rider.navigation.SosActive
 import com.nova.rider.navigation.Surge
 import com.nova.rider.navigation.Welcome
+import kotlinx.coroutines.launch
 
 @Composable
 fun AccountScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var dark by rememberSaveable { mutableStateOf(false) }
+    var passkeyBusy by remember { mutableStateOf(false) }
+    var passkeyMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val passkeyManager = remember { PasskeyManager(context) }
+    val user = AuthStore.session?.user
+    val riderName = listOfNotNull(
+        user?.firstName?.ifBlank { null },
+        user?.lastName?.ifBlank { null },
+    ).joinToString(" ").ifBlank { Sample.riderName }
+    val riderPhone = user?.phone ?: Sample.riderPhone
+    val riderInitials = listOfNotNull(
+        user?.firstName?.firstOrNull()?.uppercaseChar(),
+        user?.lastName?.firstOrNull()?.uppercaseChar(),
+    ).joinToString("").ifBlank { Sample.riderInitials }
+
     TabPage("", RiderTab.Account, nav::tab) {
         Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CookieAvatar(Sample.riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 80.dp, shape = NovaShape.Sunny)
+            CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 80.dp, shape = NovaShape.Sunny)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(Sample.riderName, style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 30.sp))
-                Text(Sample.riderPhone, fontSize = 14.sp, color = c.onSurfaceVariant)
+                Text(riderName, style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 30.sp))
+                Text(riderPhone, fontSize = 14.sp, color = c.onSurfaceVariant)
                 Box(Modifier.height(28.dp).clip(CircleShape).background(c.secondaryContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
                     Text("★ ${Sample.riderRating} rider rating", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.onSecondaryContainer)
                 }
@@ -120,7 +144,62 @@ fun AccountScreen(nav: Navigator) {
             SwitchRow(2, 4, NovaIcons.Moon, "Dark theme", null, dark) { dark = it }
             NovaListItem(3, 4, "Help & support", leading = { Icon(NovaIcons.Help, null) }, onClick = { nav.go(Help) })
         }
-        TextButton(onClick = { nav.reset(Welcome) }, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+        // Passkey registration — lets the rider sign in with fingerprint / screen lock next time.
+        Surface(
+            onClick = {
+                if (!passkeyBusy) {
+                    scope.launch {
+                        passkeyBusy = true
+                        passkeyMessage = null
+                        try {
+                            val options = NovaApi.passkeyRegisterOptions()
+                            val credential = passkeyManager.createPasskey(options)
+                            NovaApi.passkeyRegisterVerify(credential)
+                            passkeyMessage = "Passkey created. You can sign in with it next time."
+                        } catch (e: Throwable) {
+                            passkeyMessage = authErrorMessage(e)
+                        } finally {
+                            passkeyBusy = false
+                        }
+                    }
+                }
+            },
+            enabled = !passkeyBusy,
+            shape = RoundedCornerShape(18.dp),
+            color = c.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                if (passkeyBusy) {
+                    androidx.compose.material3.LoadingIndicator(Modifier.size(24.dp), color = c.primary)
+                } else {
+                    Icon(NovaIcons.Finger, null, modifier = Modifier.size(24.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Create a passkey", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        if (passkeyBusy) "Setting up…" else "Use fingerprint or screen lock to sign in",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.onSurfaceVariant,
+                    )
+                }
+                Icon(NovaIcons.Chev, null, modifier = Modifier.size(20.dp))
+            }
+        }
+        passkeyMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = c.primary, modifier = Modifier.padding(horizontal = 4.dp))
+        }
+        TextButton(
+            onClick = {
+                AuthStore.clearSession()
+                nav.reset(Welcome)
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+        ) {
             Text("Log out", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.error)
         }
     }
@@ -155,11 +234,22 @@ fun SubPage(
 @Composable
 fun EditProfileScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var name by rememberSaveable { mutableStateOf(Sample.riderName) }
-    var email by rememberSaveable { mutableStateOf("akash@example.co.nz") }
+    val user = AuthStore.session?.user
+    val riderName = listOfNotNull(
+        user?.firstName?.ifBlank { null },
+        user?.lastName?.ifBlank { null },
+    ).joinToString(" ").ifBlank { Sample.riderName }
+    val riderPhone = user?.phone ?: Sample.riderPhone
+    val riderInitials = listOfNotNull(
+        user?.firstName?.firstOrNull()?.uppercaseChar(),
+        user?.lastName?.firstOrNull()?.uppercaseChar(),
+    ).joinToString("").ifBlank { Sample.riderInitials }
+
+    var name by rememberSaveable { mutableStateOf(riderName) }
+    var email by rememberSaveable { mutableStateOf(user?.email ?: "akash@example.co.nz") }
     SubPage("Edit profile", onBack = { nav.back() }, bottom = { NovaButton("Save changes", onClick = { nav.back() }, enabled = name.isNotBlank()) }) {
         Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 6.dp).size(120.dp)) {
-            CookieAvatar(Sample.riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 120.dp, shape = NovaShape.Sunny)
+            CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 120.dp, shape = NovaShape.Sunny)
             Surface(
                 onClick = {}, shape = RoundedCornerShape(14.dp), color = c.primary, contentColor = Color.White,
                 border = BorderStroke(3.dp, c.surface), modifier = Modifier.align(Alignment.BottomEnd).offset(y = (-4).dp).size(44.dp),
@@ -167,7 +257,7 @@ fun EditProfileScreen(nav: Navigator) {
         }
         NovaTextField(name, { name = it }, "Preferred name", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
         NovaTextField(email, { email = it }, "Email", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-        ReadOnlyField("Mobile", Sample.riderPhone) {
+        ReadOnlyField("Mobile", riderPhone) {
             Row(Modifier.height(28.dp).clip(CircleShape).background(NovaPalette.Mint).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Icon(NovaIcons.Check, null, Modifier.size(14.dp), tint = NovaPalette.OnMint)
                 Text("Verified", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = NovaPalette.OnMint)

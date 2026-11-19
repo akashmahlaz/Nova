@@ -102,6 +102,27 @@ async fn main() {
 "#)
         }))
         .route("/health", get(|| async { "Dispatch engine is running! 🏃" }))
+        .route(
+            "/.well-known/assetlinks.json",
+            get(|| async {
+                let fingerprint = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT").unwrap_or_default();
+                let body = serde_json::json!([{
+                    "relation": [
+                        "delegate_permission/common.handle_all_urls",
+                        "delegate_permission/common.get_login_creds"
+                    ],
+                    "target": {
+                        "namespace": "android_app",
+                        "package_name": "com.nova.rider",
+                        "sha256_cert_fingerprints": [fingerprint]
+                    }
+                }]);
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    axum::Json(body),
+                )
+            }),
+        )
         .merge(auth::router())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

@@ -14,6 +14,12 @@ pub struct Config {
     pub resend: Option<ResendConfig>,
     /// Development only: skip Twilio/Resend and log the OTP instead. Never enable in production.
     pub otp_dev_log: bool,
+    /// WebAuthn RP ID — the domain the passkey is bound to (e.g. `nova.punjab.fireclaw.in`).
+    pub passkey_rp_id: String,
+    /// WebAuthn RP origin — the full origin (e.g. `https://nova.punjab.fireclaw.in`).
+    pub passkey_rp_origin: String,
+    /// SHA-256 of the signing certificate, for `/.well-known/assetlinks.json`.
+    pub passkey_assetlinks_fingerprint: String,
 }
 
 #[derive(Clone)]
@@ -72,6 +78,11 @@ impl Config {
             twilio,
             resend,
             otp_dev_log: optional("OTP_DEV_LOG").is_some_and(|v| v == "true"),
+            passkey_rp_id: optional("PASSKEY_RP_ID").unwrap_or_else(|| "localhost".into()),
+            passkey_rp_origin: optional("PASSKEY_RP_ORIGIN")
+                .unwrap_or_else(|| "http://localhost:3000".into()),
+            passkey_assetlinks_fingerprint: optional("PASSKEY_ASSETLINKS_FINGERPRINT")
+                .unwrap_or_default(),
         })
     }
 }

@@ -40,6 +40,8 @@ import androidx.compose.ui.unit.sp
 import com.nova.designsystem.components.NovaShape
 import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.theme.NovaTheme
+import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.navigation.Home
 import com.nova.rider.navigation.Navigator
 import com.nova.rider.navigation.Onboarding1
 import kotlinx.coroutines.delay
@@ -49,7 +51,7 @@ import kotlinx.coroutines.delay
 fun SplashScreen(nav: Navigator) {
     LaunchedEffect(Unit) {
         delay(1800)
-        nav.reset(Onboarding1)
+        if (AuthStore.session != null) nav.reset(Home) else nav.reset(Onboarding1)
     }
     val infinite = rememberInfiniteTransition(label = "splash")
     val spin by infinite.animateFloat(0f, 360f, infiniteRepeatable(tween(18_000, easing = LinearEasing)), label = "spin")
@@ -59,7 +61,9 @@ fun SplashScreen(nav: Navigator) {
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.primary)
-            .clickable { nav.reset(Onboarding1) }
+            .clickable {
+                if (AuthStore.session != null) nav.reset(Home) else nav.reset(Onboarding1)
+            }
             .semantics { contentDescription = "Nova. Tap to continue" },
     ) {
         ShapeBadge(NovaShape.Burst, 620.dp, Color.White, Modifier.offset((-115).dp, (-240).dp).alpha(0.12f).rotate(spin))

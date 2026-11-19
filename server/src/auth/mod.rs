@@ -14,6 +14,7 @@
 pub mod jwt;
 pub mod notify;
 pub mod otp;
+pub mod passkey;
 
 use axum::{
     extract::State,
@@ -49,6 +50,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/auth/refresh", post(refresh))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/me", get(me))
+        .merge(passkey::router())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -181,7 +183,7 @@ async fn find_user_by(st: &AppState, channel: Channel, destination: &str) -> Res
     Ok(sqlx::query_as::<_, User>(sql).bind(destination).fetch_optional(&st.pool).await?)
 }
 
-async fn load_user(st: &AppState, id: Uuid) -> Result<User, ApiError> {
+pub(crate) async fn load_user(st: &AppState, id: Uuid) -> Result<User, ApiError> {
     sqlx::query_as::<_, User>(
         "SELECT id, phone_e164, email, first_name, last_name, created_at FROM users WHERE id = $1",
     )
@@ -430,7 +432,7 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
 
 // ---------- sessions ----------
 
-async fn issue_session(st: &AppState, user: &User) -> Result<SessionRes, ApiError> {
+pub(crate) async fn issue_session(st: &AppState, user: &User) -> Result<SessionRes, ApiError> {
     let access_token = jwt::encode_access(&st.cfg.jwt_secret, user.id)?;
     let refresh_token = otp::new_refresh_token();
     sqlx::query("INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)")

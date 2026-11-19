@@ -33,6 +33,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +42,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import com.nova.designsystem.components.NovaButton
 import com.nova.designsystem.components.NovaOutlinedButton
 import com.nova.designsystem.components.NovaShape
@@ -52,6 +55,7 @@ import com.nova.designsystem.icons.NovaIcons
 import com.nova.rider.data.auth.AuthStore
 import com.nova.rider.data.auth.Country
 import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.PasskeyManager
 import com.nova.rider.data.auth.PhoneRegions
 import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.navigation.Home
@@ -259,10 +263,13 @@ fun LoginScreen(nav: Navigator) {
     var email by rememberSaveable { mutableStateOf("") }
     var useEmail by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var passkeyBusy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCountries by remember { mutableStateOf(false) }
     val country = AuthStore.country
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val passkeyManager = remember { PasskeyManager(context) }
     val c = MaterialTheme.colorScheme
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         NovaTopBar(onBack = { nav.back() })
@@ -316,17 +323,47 @@ fun LoginScreen(nav: Navigator) {
             )
             OrDivider()
             Surface(
-                onClick = { nav.reset(Home) },
+                onClick = {
+                    if (!passkeyBusy) {
+                        scope.launch {
+                            passkeyBusy = true
+                            error = null
+                            try {
+                                val (options, stateToken) = NovaApi.passkeyLoginOptions()
+                                val credential = passkeyManager.getPasskey(options)
+                                val session = NovaApi.passkeyLoginVerify(credential, stateToken)
+                                AuthStore.saveSession(session)
+                                nav.reset(Home)
+                            } catch (e: NoCredentialException) {
+                                error = "No passkeys found. Sign in with your phone or email first."
+                            } catch (e: GetCredentialCancellationException) {
+                                // User dismissed the bottom sheet — no-op.
+                            } catch (e: Throwable) {
+                                error = authErrorMessage(e)
+                            } finally {
+                                passkeyBusy = false
+                            }
+                        }
+                    }
+                },
+                enabled = !passkeyBusy,
                 shape = RoundedCornerShape(20.dp),
                 color = c.secondaryContainer,
                 contentColor = c.onSecondaryContainer,
                 modifier = Modifier.fillMaxWidth().height(64.dp),
             ) {
                 Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Icon(NovaIcons.Finger, null, modifier = Modifier.size(26.dp))
+                    if (passkeyBusy) {
+                        androidx.compose.material3.LoadingIndicator(Modifier.size(26.dp), color = c.onSecondaryContainer)
+                    } else {
+                        Icon(NovaIcons.Finger, null, modifier = Modifier.size(26.dp))
+                    }
                     Column(Modifier.weight(1f)) {
                         Text("Use a passkey", style = MaterialTheme.typography.labelLarge)
-                        Text("Fingerprint or screen lock — no code needed", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            if (passkeyBusy) "Waiting for your passkey…" else "Fingerprint or screen lock — no code needed",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     Icon(NovaIcons.Chev, null, modifier = Modifier.size(20.dp))
                 }

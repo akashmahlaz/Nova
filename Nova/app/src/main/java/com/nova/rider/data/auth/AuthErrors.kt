@@ -18,6 +18,12 @@ fun authErrorMessage(error: Throwable): String {
             else "Too many requests. Please wait a moment and try again."
         }
         "sms_not_configured", "email_not_configured", "sms_failed", "email_failed" -> "We couldn't send the code. Try again shortly."
+        "passkey_invalid" -> "That passkey response wasn't valid. Try again."
+        "passkey_challenge_expired" -> "That passkey request expired. Try again."
+        "passkey_verification_failed" -> "Couldn't verify your passkey. Try again."
+        "passkey_already_registered" -> "This passkey is already on your account."
+        "passkey_options_failed" -> "Couldn't start the passkey flow. Try again."
+        "unauthorized" -> "You need to be signed in for that."
         "network_error" -> "No connection. Check your internet and try again."
         else -> "Something went wrong. Try again."
     }

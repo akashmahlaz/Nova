@@ -65,6 +65,7 @@ import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaTheme
 import com.nova.rider.data.Sample
 import com.nova.rider.data.SearchResults
+import com.nova.rider.data.auth.AuthStore
 import com.nova.rider.feature.common.DotKind
 import com.nova.rider.feature.common.MapFab
 import com.nova.rider.feature.common.RouteDot
@@ -87,6 +88,13 @@ fun HomeScreen(nav: Navigator) {
             userDot(196f, 252f, c.primary)
         }
         // Expressive search bar
+        val user = AuthStore.session?.user
+        val riderName = user?.firstName?.ifBlank { null } ?: Sample.riderName
+        val riderInitials = listOfNotNull(
+            user?.firstName?.firstOrNull()?.uppercaseChar(),
+            user?.lastName?.firstOrNull()?.uppercaseChar(),
+        ).joinToString("").ifBlank { Sample.riderInitials }
+
         Surface(
             onClick = { nav.go(Search) },
             modifier = Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp).fillMaxWidth().height(56.dp),
@@ -97,13 +105,13 @@ fun HomeScreen(nav: Navigator) {
             Row(Modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { nav.go(Account) }) { Icon(NovaIcons.Menu, "Open menu") }
                 Text("Search places, addresses", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant, modifier = Modifier.weight(1f))
-                CookieAvatar(Sample.riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 40.dp)
+                CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 40.dp)
             }
         }
         Column(Modifier.align(Alignment.BottomCenter)) {
             MapSheet(contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text("Where to,\n${Sample.riderName}?", style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp))
+                    Text("Where to,\n$riderName?", style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp))
                     NovaConnectedGroup(
                         options = listOf("Now", "Schedule", "For someone"),
                         selectedIndex = whenIndex,
