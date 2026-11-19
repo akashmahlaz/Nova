@@ -73,7 +73,7 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/health", get(|| async { "Dispatch engine is running!" }))
+        .route("/health", get(|| async { "Dispatch engine is running! 🏃" }))
         .merge(auth::router())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
