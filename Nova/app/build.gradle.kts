@@ -22,7 +22,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.nova.rider"
+        applicationId = "com.nova.kiwiriders"
         minSdk = 26
         targetSdk = 37
         versionCode = 1

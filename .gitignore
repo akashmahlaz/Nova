@@ -82,12 +82,17 @@ captures/
 .kotlin/
 **/.kotlin/
 
-# Android package & compiled files
+# Android package, signing & compiled files
 *.apk
 *.ap_
 *.aab
 *.dex
 *.class
+*.jks
+*.keystore
+*.pem
+**/release/
+playstore_icon.png
 
 # --- Rust / Cargo (server) ---
 target/

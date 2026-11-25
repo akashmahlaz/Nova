@@ -134,46 +134,49 @@ object NovaApi {
 
     private fun JsonObject.toSession(): Session = json.decodeFromJsonElement(Session.serializer(), this)
 
-    /** Like [request] but adds `Authorization: Bearer <session.accessToken>` when signed in. */
+    /**
+     * Authenticated request with automatic one-shot token refresh on 401.
+     * Synchronized around refresh so concurrent expired requests don't race and revoke rotated tokens.
+     */
     private fun requestAuth(method: String, path: String, body: JsonObject?): JsonObject {
-        val fullUrl = API_BASE_URL + path
-        android.util.Log.d("NovaApi", "--> $method $fullUrl body=$body")
-        val conn = (URL(fullUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 10_000
-            readTimeout = 15_000
-            setRequestProperty("Accept", "application/json")
-            AuthStore.session?.accessToken?.let {
-                setRequestProperty("Authorization", "Bearer $it")
-            }
+        val current = AuthStore.session
+        return try {
+            executeRequest(method, path, body, bearerToken = current?.accessToken)
+        } catch (e: ApiException) {
+            if ((e.code != "unauthorized" && e.code != "http_401") || current == null) throw e
+            val refreshed = refreshSessionLocked(current)
+            executeRequest(method, path, body, bearerToken = refreshed.accessToken)
         }
-        try {
-            if (body != null) {
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+    }
+
+    private fun refreshSessionLocked(expiredSession: Session): Session = synchronized(this) {
+        val latest = AuthStore.session
+        if (latest != null && latest.accessToken != expiredSession.accessToken) {
+            return latest
+        }
+        return try {
+            val next = executeRequest(
+                "POST",
+                "/v1/auth/refresh",
+                buildJsonObject { put("refresh_token", expiredSession.refreshToken) },
+                bearerToken = null,
+            ).toSession()
+            AuthStore.saveSession(next)
+            next
+        } catch (e: ApiException) {
+            if (e.code == "http_401" || e.code == "unauthorized") {
+                AuthStore.clearSession()
             }
-            val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            android.util.Log.d("NovaApi", "<-- $code $fullUrl response: $text")
-            val parsed = if (text.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(text).jsonObject
-            if (code !in 200..299) {
-                val error = parsed["error"]?.jsonPrimitive?.contentOrNull ?: "http_$code"
-                throw ApiException(error, conn.getHeaderField("Retry-After")?.toIntOrNull())
-            }
-            return parsed
-        } catch (e: IOException) {
-            android.util.Log.e("NovaApi", "Network error connecting to $fullUrl", e)
-            throw ApiException("network_error")
-        } finally {
-            conn.disconnect()
+            throw e
         }
     }
 
     private fun JsonObject.str(key: String): String = getValue(key).jsonPrimitive.content
 
-    private fun request(method: String, path: String, body: JsonObject?): JsonObject {
+    private fun request(method: String, path: String, body: JsonObject?): JsonObject =
+        executeRequest(method, path, body, bearerToken = null)
+
+    private fun executeRequest(method: String, path: String, body: JsonObject?, bearerToken: String?): JsonObject {
         val fullUrl = API_BASE_URL + path
         android.util.Log.d("NovaApi", "--> $method $fullUrl body=$body")
         val conn = (URL(fullUrl).openConnection() as HttpURLConnection).apply {
@@ -181,6 +184,9 @@ object NovaApi {
             connectTimeout = 10_000
             readTimeout = 15_000
             setRequestProperty("Accept", "application/json")
+            if (bearerToken != null) {
+                setRequestProperty("Authorization", "Bearer $bearerToken")
+            }
         }
         try {
             if (body != null) {

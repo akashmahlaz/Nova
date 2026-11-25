@@ -195,8 +195,14 @@ fun AccountScreen(nav: Navigator) {
         }
         TextButton(
             onClick = {
-                AuthStore.clearSession()
-                nav.reset(Welcome)
+                val refreshToken = AuthStore.session?.refreshToken
+                scope.launch {
+                    if (!refreshToken.isNullOrBlank()) {
+                        runCatching { NovaApi.logout(refreshToken) }
+                    }
+                    AuthStore.clearSession()
+                    nav.reset(Welcome)
+                }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {

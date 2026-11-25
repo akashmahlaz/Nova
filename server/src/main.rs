@@ -106,17 +106,23 @@ async fn main() {
             "/.well-known/assetlinks.json",
             get(|| async {
                 let fingerprint = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT").unwrap_or_default();
-                let body = serde_json::json!([{
-                    "relation": [
-                        "delegate_permission/common.handle_all_urls",
-                        "delegate_permission/common.get_login_creds"
-                    ],
-                    "target": {
-                        "namespace": "android_app",
-                        "package_name": "com.nova.rider",
-                        "sha256_cert_fingerprints": [fingerprint]
-                    }
-                }]);
+                let target = |pkg: &str| {
+                    serde_json::json!({
+                        "relation": [
+                            "delegate_permission/common.handle_all_urls",
+                            "delegate_permission/common.get_login_creds"
+                        ],
+                        "target": {
+                            "namespace": "android_app",
+                            "package_name": pkg,
+                            "sha256_cert_fingerprints": [fingerprint]
+                        }
+                    })
+                };
+                let body = serde_json::json!([
+                    target("com.nova.kiwiriders"),
+                    target("com.nova.rider"),
+                ]);
                 (
                     [(axum::http::header::CONTENT_TYPE, "application/json")],
                     axum::Json(body),
