@@ -46,6 +46,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object Account : Route
 @Serializable data object EditProfile : Route
 @Serializable data object SavedPlaces : Route
+/** Saved places opened straight into the editor for one slot ("home" / "work" / "custom"). */
+@Serializable data class SetUpPlace(val kind: String) : Route
 @Serializable data object Notifications : Route
 @Serializable data object Offers : Route
 @Serializable data object Settings : Route

@@ -77,6 +77,7 @@ object AuthStore {
         session = null
         prefs?.edit()?.remove(KEY_SESSION)?.apply()
         com.nova.rider.data.profile.ProfileStore.clear()
+        com.nova.rider.data.trip.TripStore.clear()
     }
 
     private fun loadSession(store: SharedPreferences): Session? {

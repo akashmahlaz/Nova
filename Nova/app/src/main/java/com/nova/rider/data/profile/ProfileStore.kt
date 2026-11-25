@@ -56,6 +56,12 @@ object ProfileStore {
         return saved
     }
 
+    suspend fun updatePlace(id: String, label: String, address: String, lat: Double?, lng: Double?): SavedPlace {
+        val updated = NovaApi.updatePlace(id, label, address, lat, lng)
+        places = places.map { if (it.id == id) updated else it }
+        return updated
+    }
+
     suspend fun deletePlace(id: String) {
         NovaApi.deletePlace(id)
         places = places.filterNot { it.id == id }

@@ -86,11 +86,11 @@ import com.nova.rider.feature.common.MapFab
 import com.nova.rider.navigation.DriverEnRoute
 import com.nova.rider.navigation.FindingDriver
 import com.nova.rider.navigation.Home
+import com.nova.rider.navigation.Search
 import com.nova.rider.navigation.LocationPermission
 import com.nova.rider.navigation.Navigator
 import com.nova.rider.navigation.RideOptions
 import com.nova.rider.navigation.Schedule
-import com.nova.rider.navigation.Search
 import com.nova.rider.navigation.TripComplete
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -104,27 +104,34 @@ private fun AlertBadge(shape: NovaShape, size: androidx.compose.ui.unit.Dp, bg: 
 @Composable
 fun NoDriversScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var notify by rememberSaveable { mutableStateOf(false) }
+    // The ride that found no driver (TripStore keeps it until the rider moves on).
+    val ride = com.nova.rider.data.trip.TripStore.ride
+    val product = ride?.productName ?: "Nova"
+    // Leaving this screen ends the failed request; pickup, stops and drop-off stay planned, so
+    // "Try again" goes back to Ride options with a fresh price.
+    fun leave(then: () -> Unit) {
+        com.nova.rider.data.trip.TripStore.forgetRide()
+        then()
+    }
+    androidx.activity.compose.BackHandler { leave { nav.popTo(com.nova.rider.navigation.RideOptions) } }
     Box(Modifier.fillMaxSize()) {
         MapBackdrop { pickup(130f, 260f); ring(130f, 260f, 110f, c.outline) }
-        MapFab(NovaIcons.Back, "Back", onClick = { nav.back() }, modifier = Modifier.statusBarsPadding().padding(start = 16.dp, top = 8.dp))
+        MapFab(NovaIcons.Back, "Back", onClick = { leave { nav.popTo(com.nova.rider.navigation.RideOptions) } }, modifier = Modifier.statusBarsPadding().padding(start = 16.dp, top = 8.dp))
         MapSheet(Modifier.align(Alignment.BottomCenter), showHandle = false, contentPadding = PaddingValues(16.dp, 28.dp, 16.dp, 28.dp)) {
             Column(Modifier.navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     AlertBadge(NovaShape.Cookie, 72.dp, c.tertiaryContainer, c.onTertiaryContainer, NovaIcons.Car)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Comfort is busy right now", style = MaterialTheme.typography.headlineSmall)
-                        Text("No Comfort drivers within 3 km of Ponsonby Rd.", fontSize = 15.sp, color = c.onSurfaceVariant)
+                        Text("$product is busy right now", style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            "No driver accepted your request near ${ride?.pickup?.name ?: "your pickup"}. You haven't been charged.",
+                            fontSize = 15.sp, color = c.onSurfaceVariant,
+                        )
                     }
                 }
-                SectionLabel("Available now")
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    AltRide("Electric · 2 min", "Fastest pickup", "$22.90", RoundedCornerShape(20.dp, 20.dp, 4.dp, 4.dp), c.primaryContainer, c.onPrimaryContainer) { nav.replaceTop(FindingDriver) }
-                    AltRide("Go · 6 min", "Hatchback, 4 seats", "$24.60", RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp), c.surfaceContainer, c.onSurface) { nav.replaceTop(FindingDriver) }
-                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NovaButton(if (notify) "We'll notify you" else "Notify me", onClick = { notify = true }, modifier = Modifier.weight(1f), height = 56.dp, leadingIcon = if (notify) NovaIcons.Check else NovaIcons.Bell)
-                    NovaOutlinedButton("Schedule", onClick = { nav.go(Schedule) }, modifier = Modifier.weight(1f))
+                    NovaButton("Try again", onClick = { leave { nav.popTo(com.nova.rider.navigation.RideOptions) } }, modifier = Modifier.weight(1f), height = 56.dp, leadingIcon = NovaIcons.Car)
+                    NovaOutlinedButton("Schedule", onClick = { leave { nav.replaceTop(Schedule) } }, modifier = Modifier.weight(1f))
                 }
             }
         }

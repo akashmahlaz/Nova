@@ -119,6 +119,7 @@ fun NovaRiderApp() {
             entry<AddCard> { AddCardScreen(nav) }
             entry<Account> { AccountScreen(nav) }
             entry<EditProfile> { EditProfileScreen(nav) }
+            entry<SetUpPlace> { key -> SavedPlacesScreen(nav, setupKind = key.kind) }
             entry<SavedPlaces> { SavedPlacesScreen(nav) }
             entry<Notifications> { NotificationsScreen(nav) }
             entry<Offers> { OffersScreen(nav) }

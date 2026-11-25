@@ -1,3 +1,5 @@
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.util.Properties
 
 plugins {
@@ -13,7 +15,28 @@ val localProps = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
+// Release builds talk to `nova.api.base.url` (production).
 val apiBaseUrl: String = localProps.getProperty("nova.api.base.url", "http://10.0.2.2:3000")
+
+// Debug builds talk to the server on this Mac. Priority:
+//   1. -Pnova.api.dev.url=...            (one-off, e.g. http://10.0.2.2:3000 for the emulator)
+//   2. nova.api.dev.url in local.properties
+//   3. this Mac's current Wi-Fi/LAN IPv4, detected at build time, port 3000
+// (3) means a phone on the same Wi-Fi reaches `cargo run` without editing files when the IP changes.
+fun lanIpv4(): String? = NetworkInterface.getNetworkInterfaces().toList()
+    .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+    .sortedBy { if (it.name == "en0") 0 else 1 }
+    .flatMap { it.inetAddresses.toList() }
+    .firstOrNull { it is Inet4Address && it.isSiteLocalAddress }
+    ?.hostAddress
+val devApiBaseUrl: String = (findProperty("nova.api.dev.url") as String?)
+    ?: localProps.getProperty("nova.api.dev.url")
+    ?: "http://${lanIpv4() ?: "10.0.2.2"}:3000"
+
+// Android Maps SDK key (map tiles only). Put MAPS_API_KEY=... in local.properties. In Google Cloud,
+// restrict it to "Android apps" with this package name + signing SHA-1, and to "Maps SDK for Android".
+// It is a different key from the server's GOOGLE_MAPS_API_KEY (Places/Routes/Geocoding).
+val mapsApiKey: String = localProps.getProperty("MAPS_API_KEY", "")
 
 android {
     namespace = "com.nova.rider"
@@ -27,7 +50,9 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
+        // Without a key the app falls back to the drawn MapBackdrop instead of a blank grey map.
+        buildConfigField("boolean", "MAPS_ENABLED", mapsApiKey.isNotBlank().toString())
     }
 
     signingConfigs {
@@ -40,7 +65,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"$devApiBaseUrl\"")
+        }
         release {
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -79,6 +108,9 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.google.maps.compose)
+    implementation(libs.google.play.services.location)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

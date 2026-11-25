@@ -61,7 +61,12 @@ import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
-import com.nova.rider.data.PastTrips
+import com.nova.rider.data.auth.NovaApi
+import com.nova.rider.data.auth.Ride
+import com.nova.rider.data.trip.TripFormat
+import com.nova.rider.data.trip.TripStore
+import com.nova.rider.data.trip.tripErrorMessage
+import kotlinx.coroutines.launch
 import com.nova.rider.data.Sample
 import com.nova.rider.feature.common.ConnectedButton
 import com.nova.rider.feature.common.MiniRouteMap
@@ -79,7 +84,21 @@ import com.nova.rider.navigation.SupportChat
 fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
     val c = MaterialTheme.colorScheme
     var filter by rememberSaveable { mutableIntStateOf(0) }
-    var upcoming by rememberSaveable { mutableStateOf(!empty) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // Rides from the server, newest first (first page; older pages load with "Show more").
+    var rides by androidx.compose.runtime.remember { mutableStateOf<List<Ride>?>(null) }
+    var loadError by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    var hasMore by androidx.compose.runtime.remember { mutableStateOf(false) }
+    var cancelTarget by androidx.compose.runtime.remember { mutableStateOf<Ride?>(null) }
+    suspend fun load() {
+        loadError = null
+        runCatching { NovaApi.rides(limit = 20) }
+            .onSuccess { rides = it; hasMore = it.size == 20 }
+            .onFailure { loadError = tripErrorMessage(it) }
+    }
+    androidx.compose.runtime.LaunchedEffect(empty) { if (!empty) load() else rides = emptyList() }
+    val upcomingRides = rides.orEmpty().filter { it.status == "scheduled" }.sortedBy { it.scheduledAt }
+    val pastRides = rides.orEmpty().filter { it.status != "scheduled" }
     TabPage("Activity", RiderTab.Activity, nav::tab) {
         Row(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("All", "Rides", "Scheduled").forEachIndexed { i, label ->
@@ -94,57 +113,130 @@ fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
                 )
             }
         }
-        val showTrips = !empty && filter != 2
-        val showUpcoming = upcoming && filter != 1
+        if (rides == null) {
+            Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) {
+                if (loadError != null) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(loadError!!, style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                    NovaOutlinedButton("Try again", onClick = { scope.launch { load() } })
+                } else androidx.compose.material3.LoadingIndicator()
+            }
+            return@TabPage
+        }
+        val showTrips = filter != 2 && pastRides.isNotEmpty()
+        val showUpcoming = filter != 1 && upcomingRides.isNotEmpty()
         if (!showTrips && !showUpcoming) {
             EmptyActivity(onBook = { nav.reset(Home) })
             return@TabPage
         }
-        if (showUpcoming) {
+        if (showUpcoming) upcomingRides.forEach { r ->
             Column(Modifier.clip(RoundedCornerShape(28.dp)).background(c.tertiaryContainer).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     IconTile(NovaIcons.Calendar, c.tertiary, Color.White, size = 48.dp, radius = 16.dp, iconSize = 22.dp)
-                    Column {
-                        Text("UPCOMING · SUN 15 NOV", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.5.sp, color = c.onTertiaryContainer)
-                        Text("6:30 AM to Airport", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                    Column(Modifier.weight(1f)) {
+                        Text("Upcoming · ${RideTime.day(r.scheduledAt)}", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                        Text("${RideTime.time(r.scheduledAt)} to ${r.dropoff.name}", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                        Text(
+                            "${r.productName} · ${TripFormat.money(r.fareCents, r.currency)}" + (r.passenger?.let { " · for ${it.name}" } ?: ""),
+                            fontSize = 13.sp, color = c.onTertiaryContainer,
+                        )
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(onClick = { nav.go(Schedule) }, shape = CircleShape, color = c.tertiary, contentColor = Color.White, modifier = Modifier.height(40.dp)) {
-                        Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text("Edit time", fontSize = 14.sp, fontWeight = FontWeight.Bold) }
-                    }
-                    Surface(onClick = { upcoming = false }, shape = CircleShape, color = Color.Transparent, contentColor = c.onTertiaryContainer, border = BorderStroke(1.dp, c.tertiary), modifier = Modifier.height(40.dp)) {
-                        Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text("Cancel", fontSize = 14.sp, fontWeight = FontWeight.Bold) }
+                    Surface(onClick = { cancelTarget = r }, shape = CircleShape, color = Color.Transparent, contentColor = c.onTertiaryContainer, border = BorderStroke(1.dp, c.tertiary), modifier = Modifier.height(40.dp)) {
+                        Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text("Cancel ride", fontSize = 14.sp, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
         }
         if (showTrips) {
-            SectionLabel("This week", Modifier.padding(horizontal = 4.dp))
+            SectionLabel("Recent", Modifier.padding(horizontal = 4.dp))
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                PastTrips.forEachIndexed { i, t ->
-                    val shape = when (i) {
-                        0 -> RoundedCornerShape(20.dp, 20.dp, 4.dp, 4.dp)
-                        PastTrips.lastIndex -> RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp)
+                pastRides.forEachIndexed { i, t ->
+                    val shape = when {
+                        pastRides.size == 1 -> RoundedCornerShape(20.dp)
+                        i == 0 -> RoundedCornerShape(20.dp, 20.dp, 4.dp, 4.dp)
+                        i == pastRides.lastIndex -> RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp)
                         else -> RoundedCornerShape(4.dp)
                     }
-                    Surface(onClick = { nav.go(Receipt) }, shape = shape, color = c.surfaceContainer) {
+                    val (statusText, statusColor) = when (t.status) {
+                        "completed" -> "Paid" to NovaTheme.colors.success
+                        "cancelled" -> "Cancelled" to c.error
+                        "no_drivers" -> "No driver found" to c.onSurfaceVariant
+                        else -> "In progress" to c.primary
+                    }
+                    Surface(
+                        onClick = {
+                            when {
+                                t.status == "completed" -> nav.go(Receipt)
+                                // Finding driver resumes the active ride from the server.
+                                t.isActive -> { TripStore.forgetRide(); nav.go(com.nova.rider.navigation.FindingDriver) }
+                            }
+                        },
+                        shape = shape, color = c.surfaceContainer,
+                    ) {
                         Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                             IconTile(NovaIcons.Car, c.primaryContainer, c.onPrimaryContainer, size = 44.dp)
                             Column(Modifier.weight(1f)) {
-                                Text(t.place, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                Text(t.whenText, fontSize = 13.sp, color = c.onSurfaceVariant)
+                                Text(t.dropoff.name, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Text("${RideTime.day(t.requestedAt ?: t.createdAt)} · ${RideTime.time(t.requestedAt ?: t.createdAt)} · ${t.productName}", fontSize = 13.sp, color = c.onSurfaceVariant)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text(t.fare, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                                Text(if (t.paid) "Paid" else "Cancelled", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (t.paid) NovaTheme.colors.success else c.error)
+                                Text(TripFormat.money(t.fareCents, t.currency), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                                Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = statusColor)
                             }
                         }
                     }
                 }
             }
+            if (hasMore) {
+                NovaOutlinedButton("Show more", onClick = {
+                    scope.launch {
+                        val last = rides?.lastOrNull() ?: return@launch
+                        runCatching { NovaApi.rides(before = last.createdAt, limit = 20) }.onSuccess {
+                            rides = rides.orEmpty() + it
+                            hasMore = it.size == 20
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
+    cancelTarget?.let { r ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { cancelTarget = null },
+            title = { Text("Cancel this ride?") },
+            text = { Text("${RideTime.day(r.scheduledAt)}, ${RideTime.time(r.scheduledAt)} to ${r.dropoff.name}. You won't be charged.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    cancelTarget = null
+                    scope.launch {
+                        runCatching { NovaApi.cancelRide(r.id, "rider_cancelled_scheduled") }
+                            .onSuccess { updated -> rides = rides?.map { if (it.id == updated.id) updated else it } }
+                            .onFailure { loadError = tripErrorMessage(it) }
+                    }
+                }) { Text("Cancel ride") }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { cancelTarget = null }) { Text("Keep ride") } },
+        )
+    }
+}
+
+/** Local day and time labels for server timestamps (ISO-8601 UTC). */
+private object RideTime {
+    private val zone get() = java.time.ZoneId.systemDefault()
+    private fun parse(iso: String?) = iso?.let { runCatching { java.time.Instant.parse(it).atZone(zone) }.getOrNull() }
+    fun day(iso: String?): String {
+        val t = parse(iso) ?: return ""
+        val today = java.time.LocalDate.now(zone)
+        return when (t.toLocalDate()) {
+            today -> "Today"
+            today.plusDays(1) -> "Tomorrow"
+            today.minusDays(1) -> "Yesterday"
+            else -> t.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM"))
+        }
+    }
+    fun time(iso: String?): String =
+        parse(iso)?.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a")) ?: ""
 }
 
 /** Empty state (also used for the "no trips yet" edge case). */

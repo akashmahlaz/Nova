@@ -28,6 +28,11 @@ playServicesAuthApiPhone = "18.1.0"
 # Credential Manager: passkeys, passwords and federated sign-in in one bottom sheet
 credentials = "1.6.0"
 
+# Google Maps Platform: Maps SDK via Compose (map tiles only; search/routing go through our API)
+mapsCompose = "9.0.1"
+# Fused Location Provider: battery-aware current location (GPS + Wi-Fi + cell)
+playServicesLocation = "21.4.0"
+
 # Testing
 junit = "4.13.2"
 
@@ -60,6 +65,10 @@ google-play-services-auth-api-phone = { group = "com.google.android.gms", name =
 androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
 androidx-credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+# Task<T>.await() for Play Services APIs (fused location)
+kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinxCoroutines" }
+google-maps-compose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
+google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 
 kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

@@ -58,6 +58,97 @@ data class EmergencyContact(
     val relationship: String = "",
 )
 
+@Serializable
+data class GeoPoint(val lat: Double, val lng: Double)
+
+/** One row in place search. Distance is straight-line from the rider, in metres. */
+@Serializable
+data class PlaceSuggestion(
+    @SerialName("place_id") val placeId: String,
+    @SerialName("primary_text") val primaryText: String,
+    @SerialName("secondary_text") val secondaryText: String = "",
+    @SerialName("distance_meters") val distanceMeters: Long? = null,
+)
+
+/** A resolved place with coordinates (from Place Details or reverse geocoding). */
+@Serializable
+data class GeoPlace(
+    @SerialName("place_id") val placeId: String = "",
+    val name: String,
+    val address: String,
+    val lat: Double,
+    val lng: Double,
+) {
+    val point: GeoPoint get() = GeoPoint(lat, lng)
+}
+
+@Serializable
+data class FareOption(
+    @SerialName("product_id") val productId: String,
+    val name: String,
+    val seats: Int,
+    val description: String = "",
+    /** Price in the quote currency's minor units (cents). */
+    @SerialName("fare_cents") val fareCents: Long,
+)
+
+@Serializable
+data class RideQuote(
+    @SerialName("quote_id") val quoteId: String,
+    @SerialName("expires_in") val expiresIn: Long,
+    @SerialName("service_area") val serviceArea: String,
+    val currency: String,
+    @SerialName("distance_meters") val distanceMeters: Long,
+    @SerialName("duration_seconds") val durationSeconds: Long,
+    /** Google encoded polyline for the route line. */
+    val polyline: String,
+    @SerialName("surge_multiplier") val surgeMultiplier: Double = 1.0,
+    val options: List<FareOption>,
+)
+
+@Serializable
+data class RidePlace(val name: String, val address: String = "", val lat: Double, val lng: Double) {
+    val point: GeoPoint get() = GeoPoint(lat, lng)
+}
+
+@Serializable
+data class RideStop(val name: String, val lat: Double, val lng: Double) {
+    val point: GeoPoint get() = GeoPoint(lat, lng)
+}
+
+@Serializable
+data class Passenger(val name: String, val phone: String)
+
+/**
+ * A booked ride as stored by the server. [status] is one of: scheduled, requested, accepted,
+ * arriving, in_progress, completed, cancelled, no_drivers. Times are ISO-8601 UTC strings.
+ */
+@Serializable
+data class Ride(
+    val id: String,
+    val status: String,
+    @SerialName("product_id") val productId: String,
+    @SerialName("product_name") val productName: String,
+    val currency: String,
+    @SerialName("fare_cents") val fareCents: Long,
+    @SerialName("distance_meters") val distanceMeters: Long,
+    @SerialName("duration_seconds") val durationSeconds: Long,
+    val polyline: String = "",
+    val pickup: RidePlace,
+    val dropoff: RidePlace,
+    val stops: List<RideStop> = emptyList(),
+    @SerialName("payment_method") val paymentMethod: String,
+    val passenger: Passenger? = null,
+    @SerialName("scheduled_at") val scheduledAt: String? = null,
+    @SerialName("requested_at") val requestedAt: String? = null,
+    @SerialName("ended_at") val endedAt: String? = null,
+    @SerialName("cancel_reason") val cancelReason: String? = null,
+    @SerialName("created_at") val createdAt: String,
+) {
+    /** Waiting for or riding with a driver (one at a time per rider). */
+    val isActive: Boolean get() = status in setOf("requested", "accepted", "arriving", "in_progress")
+}
+
 data class SendOtpResult(val destinationHint: String, val resendIn: Int)
 
 /** Sign-up verifies return a proof; login verifies return a session. */
@@ -198,6 +289,16 @@ object NovaApi {
         json.decodeFromJsonElement(SavedPlace.serializer(), res)
     }
 
+    suspend fun updatePlace(id: String, label: String, address: String, lat: Double?, lng: Double?): SavedPlace = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("label", label)
+            put("address", address)
+            lat?.let { put("lat", it) }
+            lng?.let { put("lng", it) }
+        }
+        json.decodeFromJsonElement(SavedPlace.serializer(), requestAuth("PATCH", "/v1/places/$id", body))
+    }
+
     suspend fun deletePlace(id: String) = withContext(Dispatchers.IO) {
         requestAuthElement("DELETE", "/v1/places/$id", null)
         Unit
@@ -222,6 +323,105 @@ object NovaApi {
         requestAuthElement("DELETE", "/v1/emergency-contacts/$id", null)
         Unit
     }
+
+    // ---------- geo & pricing (server proxies Google; the Places/Routes key never ships in the app) ----------
+
+    /** One call per debounced keystroke. Reuse [sessionToken] for the whole search, then drop it. */
+    suspend fun autocomplete(input: String, sessionToken: String, near: GeoPoint?): List<PlaceSuggestion> = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("input", input)
+            put("session_token", sessionToken)
+            near?.let { put("near", buildJsonObject { put("lat", it.lat); put("lng", it.lng) }) }
+        }
+        val res = requestAuth("POST", "/v1/geo/autocomplete", body)
+        json.decodeFromJsonElement(ListSerializer(PlaceSuggestion.serializer()), res.getValue("suggestions"))
+    }
+
+    /** Resolves a suggestion to coordinates. Passing the same [sessionToken] closes Google's billing session. */
+    suspend fun placeDetails(placeId: String, sessionToken: String?): GeoPlace = withContext(Dispatchers.IO) {
+        val query = sessionToken?.let { "?session_token=${encode(it)}" }.orEmpty()
+        json.decodeFromJsonElement(GeoPlace.serializer(), requestAuth("GET", "/v1/geo/places/${encode(placeId)}$query", null))
+    }
+
+    /** Street address under a map pin. */
+    suspend fun reverseGeocode(at: GeoPoint): GeoPlace = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(GeoPlace.serializer(), requestAuth("GET", "/v1/geo/reverse?lat=${at.lat}&lng=${at.lng}", null))
+    }
+
+    /** Closest landmark places around [at], nearest first (zero-typing suggestions). */
+    suspend fun nearby(at: GeoPoint): List<GeoPlace> = withContext(Dispatchers.IO) {
+        val res = requestAuth("GET", "/v1/geo/nearby?lat=${at.lat}&lng=${at.lng}", null)
+        json.decodeFromJsonElement(ListSerializer(GeoPlace.serializer()), res.getValue("places"))
+    }
+
+    /** Upfront prices for every ride type, locked server side for [RideQuote.expiresIn] seconds. */
+    suspend fun quote(pickup: GeoPoint, dropoff: GeoPoint, stops: List<GeoPoint> = emptyList()): RideQuote = withContext(Dispatchers.IO) {
+        fun GeoPoint.json() = buildJsonObject { put("lat", lat); put("lng", lng) }
+        val body = buildJsonObject {
+            put("pickup", pickup.json())
+            put("dropoff", dropoff.json())
+            put("stops", kotlinx.serialization.json.JsonArray(stops.map { it.json() }))
+        }
+        json.decodeFromJsonElement(RideQuote.serializer(), requestAuth("POST", "/v1/rides/quote", body))
+    }
+
+    // ---------- rides ----------
+
+    /**
+     * Books [productId] from a locked quote. The server takes price and route from the quote, so
+     * only display names and choices are sent. [scheduledAt] (ISO-8601 UTC) books for later.
+     */
+    suspend fun bookRide(
+        quoteId: String,
+        productId: String,
+        paymentMethod: String,
+        pickup: GeoPlace,
+        dropoff: GeoPlace,
+        stopNames: List<String>,
+        scheduledAt: String? = null,
+        passenger: Passenger? = null,
+    ): Ride = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("quote_id", quoteId)
+            put("product_id", productId)
+            put("payment_method", paymentMethod)
+            put("pickup_name", pickup.name)
+            put("pickup_address", pickup.address)
+            put("dropoff_name", dropoff.name)
+            put("dropoff_address", dropoff.address)
+            put("stop_names", kotlinx.serialization.json.JsonArray(stopNames.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            scheduledAt?.let { put("scheduled_at", it) }
+            passenger?.let { put("passenger", buildJsonObject { put("name", it.name); put("phone", it.phone) }) }
+        }
+        json.decodeFromJsonElement(Ride.serializer(), requestAuth("POST", "/v1/rides", body))
+    }
+
+    suspend fun ride(id: String): Ride = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(Ride.serializer(), requestAuth("GET", "/v1/rides/${encode(id)}", null))
+    }
+
+    /** The ride in progress, if any (to resume after the app restarts). */
+    suspend fun activeRide(): Ride? = withContext(Dispatchers.IO) {
+        val res = requestAuth("GET", "/v1/rides/active", null)
+        res["ride"]?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.let { json.decodeFromJsonElement(Ride.serializer(), it) }
+    }
+
+    /** Newest first. Pass the last ride's createdAt as [before] for the next page. */
+    suspend fun rides(before: String? = null, limit: Int = 20): List<Ride> = withContext(Dispatchers.IO) {
+        val query = buildString {
+            append("?limit=").append(limit)
+            before?.let { append("&before=").append(encode(it)) }
+        }
+        val res = requestAuth("GET", "/v1/rides$query", null)
+        json.decodeFromJsonElement(ListSerializer(Ride.serializer()), res.getValue("rides"))
+    }
+
+    suspend fun cancelRide(id: String, reason: String? = null): Ride = withContext(Dispatchers.IO) {
+        val body = buildJsonObject { reason?.let { put("reason", it) } }
+        json.decodeFromJsonElement(Ride.serializer(), requestAuth("POST", "/v1/rides/${encode(id)}/cancel", body))
+    }
+
+    private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8)
 
     private fun JsonObject.toSession(): Session = json.decodeFromJsonElement(Session.serializer(), this)
 
