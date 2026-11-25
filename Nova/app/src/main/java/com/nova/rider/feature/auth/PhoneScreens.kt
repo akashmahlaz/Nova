@@ -3,9 +3,11 @@ package com.nova.rider.feature.auth
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -159,92 +161,107 @@ fun SignUpPhoneScreen(nav: Navigator) {
     val scope = rememberCoroutineScope()
     val c = MaterialTheme.colorScheme
 
-    Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
-        NovaTopBar(onBack = { nav.back() })
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(c.surface)
+            .navigationBarsPadding()
+            .imePadding(),
+    ) {
+        val availableHeight = maxHeight
         Column(
             Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                ShapeBadge(NovaShape.Cookie, 64.dp, c.primaryContainer) {
-                    Icon(
-                        if (useEmail) NovaIcons.Mail else NovaIcons.Smartphone,
-                        null,
-                        tint = c.onPrimaryContainer,
-                        modifier = Modifier.size(28.dp),
+            NovaTopBar(onBack = { nav.back() })
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = (availableHeight - 64.dp).coerceAtLeast(0.dp))
+                    .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (availableHeight >= 460.dp) {
+                            ShapeBadge(NovaShape.Cookie, 64.dp, c.primaryContainer) {
+                                Icon(
+                                    if (useEmail) NovaIcons.Mail else NovaIcons.Smartphone,
+                                    null,
+                                    tint = c.onPrimaryContainer,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Text(
+                            if (useEmail) "What's your\nemail?" else "What's your\nnumber?",
+                            style = MaterialTheme.typography.headlineLarge,
+                        )
+                        Text(
+                            if (useEmail) "We'll email a 6-digit code to verify your address." else "We'll text a 6-digit code to verify it's you.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = c.onSurfaceVariant,
+                        )
+                    }
+
+                    if (useEmail) {
+                        NovaTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = "Email address",
+                            placeholder = "you@example.com",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        )
+                    } else {
+                        PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+                    }
+
+                    OrDivider()
+
+                    NovaOutlinedButton(
+                        if (useEmail) "Use phone instead" else "Continue with email",
+                        onClick = {
+                            useEmail = !useEmail
+                            error = null
+                        },
+                        leadingIcon = if (useEmail) NovaIcons.Smartphone else NovaIcons.Mail,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (useEmail) "What's your\nemail?" else "What's your\nnumber?",
-                    style = MaterialTheme.typography.headlineLarge,
-                )
-                Text(
-                    if (useEmail) "We'll email a 6-digit code to verify your address." else "We'll text a 6-digit code to verify it's you.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = c.onSurfaceVariant,
-                )
+
+                Column(
+                    Modifier.padding(top = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+                    TermsText()
+                    val e164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
+                    val canSend = if (useEmail) email.contains('@') && !busy else (e164 != null && !busy)
+
+                    NovaButton(
+                        "Send code",
+                        enabled = canSend,
+                        onClick = {
+                            val channel = if (useEmail) "email" else "phone"
+                            val destination = if (useEmail) email.trim().lowercase() else (e164 ?: return@NovaButton)
+                            scope.launch {
+                                busy = true
+                                error = null
+                                try {
+                                    NovaApi.sendOtp(channel, destination, "signup")
+                                    nav.go(Otp(channel, destination, "signup"))
+                                } catch (e: Throwable) {
+                                    error = authErrorMessage(e)
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        },
+                    )
+                }
             }
-
-            if (useEmail) {
-                NovaTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = "Email address",
-                    placeholder = "you@example.com",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                )
-            } else {
-                PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
-            }
-
-            OrDivider()
-
-            NovaOutlinedButton(
-                if (useEmail) "Use phone instead" else "Continue with email",
-                onClick = {
-                    useEmail = !useEmail
-                    error = null
-                },
-                leadingIcon = if (useEmail) NovaIcons.Smartphone else NovaIcons.Mail,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        Column(
-            Modifier
-                .navigationBarsPadding()
-                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp, top = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
-            TermsText()
-            val e164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
-            val canSend = if (useEmail) email.contains('@') && !busy else (e164 != null && !busy)
-
-            NovaButton(
-                "Send code",
-                enabled = canSend,
-                onClick = {
-                    val channel = if (useEmail) "email" else "phone"
-                    val destination = if (useEmail) email.trim().lowercase() else (e164 ?: return@NovaButton)
-                    scope.launch {
-                        busy = true
-                        error = null
-                        try {
-                            NovaApi.sendOtp(channel, destination, "signup")
-                            nav.go(Otp(channel, destination, "signup"))
-                        } catch (e: Throwable) {
-                            error = authErrorMessage(e)
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-            )
         }
     }
     if (showCountries) {
@@ -271,110 +288,130 @@ fun LoginScreen(nav: Navigator) {
     val context = LocalContext.current
     val passkeyManager = remember { PasskeyManager(context) }
     val c = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
-        NovaTopBar(onBack = { nav.back() })
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .background(c.surface)
+            .navigationBarsPadding()
+            .imePadding(),
+    ) {
+        val availableHeight = maxHeight
         Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp),
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
         ) {
-            ShapeBadge(NovaShape.Cookie, 64.dp, c.primaryContainer) {
-                Icon(NovaIcons.User, null, tint = c.onPrimaryContainer, modifier = Modifier.size(28.dp))
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Welcome back", style = MaterialTheme.typography.headlineLarge)
-                Text(
-                    if (useEmail) "Log in with the email on your Nova account." else "Log in with the mobile number on your Nova account.",
-                    style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant,
-                )
-            }
-            if (useEmail) {
-                NovaTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = "Email",
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                )
-            } else {
-                PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
-            }
-            val phoneE164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
-            NovaButton("Send code", enabled = !busy && (if (useEmail) email.contains('@') else phoneE164 != null), onClick = {
-                scope.launch {
-                    busy = true
-                    error = null
-                    val channel = if (useEmail) "email" else "phone"
-                    val destination = if (useEmail) email.trim().lowercase() else phoneE164.orEmpty()
-                    try {
-                        NovaApi.sendOtp(channel, destination, "login")
-                        nav.go(Otp(channel, destination, "login"))
-                    } catch (e: Throwable) {
-                        error = authErrorMessage(e)
-                    } finally {
-                        busy = false
+            NovaTopBar(onBack = { nav.back() })
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = (availableHeight - 64.dp).coerceAtLeast(0.dp))
+                    .padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    if (availableHeight >= 460.dp) {
+                        ShapeBadge(NovaShape.Cookie, 64.dp, c.primaryContainer) {
+                            Icon(NovaIcons.User, null, tint = c.onPrimaryContainer, modifier = Modifier.size(28.dp))
+                        }
                     }
-                }
-            })
-            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
-            NovaOutlinedButton(
-                if (useEmail) "Use phone instead" else "Continue with email",
-                onClick = { useEmail = !useEmail; error = null },
-                leadingIcon = NovaIcons.Mail,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OrDivider()
-            Surface(
-                onClick = {
-                    if (!passkeyBusy) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Welcome back", style = MaterialTheme.typography.headlineLarge)
+                        Text(
+                            if (useEmail) "Log in with the email on your Nova account." else "Log in with the mobile number on your Nova account.",
+                            style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant,
+                        )
+                    }
+                    if (useEmail) {
+                        NovaTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = "Email",
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        )
+                    } else {
+                        PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
+                    }
+                    val phoneE164 = country?.let { PhoneRegions.toE164(it.iso, phone) }
+                    NovaButton("Send code", enabled = !busy && (if (useEmail) email.contains('@') else phoneE164 != null), onClick = {
                         scope.launch {
-                            passkeyBusy = true
+                            busy = true
                             error = null
+                            val channel = if (useEmail) "email" else "phone"
+                            val destination = if (useEmail) email.trim().lowercase() else phoneE164.orEmpty()
                             try {
-                                val (options, stateToken) = NovaApi.passkeyLoginOptions()
-                                val credential = passkeyManager.getPasskey(options)
-                                val session = NovaApi.passkeyLoginVerify(credential, stateToken)
-                                AuthStore.saveSession(session)
-                                nav.reset(Home)
-                            } catch (e: NoCredentialException) {
-                                error = "No passkeys found. Sign in with your phone or email first."
-                            } catch (e: GetCredentialCancellationException) {
-                                // User dismissed the bottom sheet — no-op.
+                                NovaApi.sendOtp(channel, destination, "login")
+                                nav.go(Otp(channel, destination, "login"))
                             } catch (e: Throwable) {
                                 error = authErrorMessage(e)
                             } finally {
-                                passkeyBusy = false
+                                busy = false
                             }
                         }
+                    })
+                    error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+                    NovaOutlinedButton(
+                        if (useEmail) "Use phone instead" else "Continue with email",
+                        onClick = { useEmail = !useEmail; error = null },
+                        leadingIcon = NovaIcons.Mail,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OrDivider()
+                    Surface(
+                        onClick = {
+                            if (!passkeyBusy) {
+                                scope.launch {
+                                    passkeyBusy = true
+                                    error = null
+                                    try {
+                                        val (options, stateToken) = NovaApi.passkeyLoginOptions()
+                                        val credential = passkeyManager.getPasskey(options)
+                                        val session = NovaApi.passkeyLoginVerify(credential, stateToken)
+                                        AuthStore.saveSession(session)
+                                        nav.reset(Home)
+                                    } catch (e: NoCredentialException) {
+                                        error = "No passkeys found. Sign in with your phone or email first."
+                                    } catch (e: GetCredentialCancellationException) {
+                                        // User dismissed the bottom sheet — no-op.
+                                    } catch (e: Throwable) {
+                                        error = authErrorMessage(e)
+                                    } finally {
+                                        passkeyBusy = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !passkeyBusy,
+                        shape = RoundedCornerShape(20.dp),
+                        color = c.secondaryContainer,
+                        contentColor = c.onSecondaryContainer,
+                        modifier = Modifier.fillMaxWidth().height(64.dp),
+                    ) {
+                        Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            if (passkeyBusy) {
+                                androidx.compose.material3.LoadingIndicator(Modifier.size(26.dp), color = c.onSecondaryContainer)
+                            } else {
+                                Icon(NovaIcons.Finger, null, modifier = Modifier.size(26.dp))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text("Use a passkey", style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    if (passkeyBusy) "Waiting for your passkey…" else "Fingerprint or screen lock — no code needed",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            Icon(NovaIcons.Chev, null, modifier = Modifier.size(20.dp))
+                        }
                     }
-                },
-                enabled = !passkeyBusy,
-                shape = RoundedCornerShape(20.dp),
-                color = c.secondaryContainer,
-                contentColor = c.onSecondaryContainer,
-                modifier = Modifier.fillMaxWidth().height(64.dp),
-            ) {
-                Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    if (passkeyBusy) {
-                        androidx.compose.material3.LoadingIndicator(Modifier.size(26.dp), color = c.onSecondaryContainer)
-                    } else {
-                        Icon(NovaIcons.Finger, null, modifier = Modifier.size(26.dp))
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Text("Use a passkey", style = MaterialTheme.typography.labelLarge)
-                        Text(
-                            if (passkeyBusy) "Waiting for your passkey…" else "Fingerprint or screen lock — no code needed",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Icon(NovaIcons.Chev, null, modifier = Modifier.size(20.dp))
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("New to Nova?", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+                    TextButton(onClick = { nav.go(SignUpPhone) }) { Text("Create an account", style = MaterialTheme.typography.labelLarge) }
                 }
             }
-        }
-        Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("New to Nova?", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
-            TextButton(onClick = { nav.go(SignUpPhone) }) { Text("Create an account", style = MaterialTheme.typography.labelLarge) }
         }
     }
     if (showCountries) {
