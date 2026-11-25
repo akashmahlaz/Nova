@@ -6,11 +6,11 @@ import {
   Mail,
   MapPin,
   RefreshCw,
-  Search,
   Shield,
   Smartphone,
   Users,
 } from 'lucide-react'
+import { useMaterialWebComponents } from '../components/m3'
 import {
   type AdminStats,
   ApiError,
@@ -38,6 +38,7 @@ function formatError(err: unknown): string {
 }
 
 function AdminConsole() {
+  useMaterialWebComponents()
   const [session, setSession] = useState<Session | null>(() => getStoredSession())
 
   if (!session) {
@@ -68,16 +69,15 @@ function AdminConsole() {
               Only users with <code className="px-1.5 py-0.5 rounded bg-[#E9E7F2] font-mono text-xs">role = &apos;admin&apos;</code> in PostgreSQL can view this console.
             </p>
           </div>
-          <button
-            type="button"
+          <md-filled-button
+            className="w-full"
             onClick={async () => {
               await novaAdminApi.logout()
               setSession(null)
             }}
-            className="w-full h-12 rounded-full bg-[#3549D6] text-white font-bold text-sm hover:bg-[#2B3DB8] transition-colors cursor-pointer"
           >
             Sign out
-          </button>
+          </md-filled-button>
         </div>
       </div>
     )
@@ -102,9 +102,9 @@ function AdminLogin({ onSuccess }: { onSuccess: (s: Session) => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+  async function submitAuth() {
     const dest = channel === 'email' ? destination.trim().toLowerCase() : destination.trim()
+    if (!dest) return
     setBusy(true)
     setError(null)
     try {
@@ -141,100 +141,80 @@ function AdminLogin({ onSuccess }: { onSuccess: (s: Session) => void }) {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-full bg-[#E9E7F2]">
-          <button
-            type="button"
+        <md-chip-set>
+          <md-filter-chip
+            label="Email"
+            selected={channel === 'email'}
             onClick={() => {
               setChannel('email')
               setCodeSent(false)
               setError(null)
             }}
-            className={`h-10 rounded-full text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
-              channel === 'email'
-                ? 'bg-[#3549D6] text-white'
-                : 'text-[#4A4B5E] hover:text-[#191A2C]'
-            }`}
-          >
-            <Mail className="w-4 h-4" />
-            Email
-          </button>
-          <button
-            type="button"
+          />
+          <md-filter-chip
+            label="Phone"
+            selected={channel === 'phone'}
             onClick={() => {
               setChannel('phone')
               setCodeSent(false)
               setError(null)
             }}
-            className={`h-10 rounded-full text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
-              channel === 'phone'
-                ? 'bg-[#3549D6] text-white'
-                : 'text-[#4A4B5E] hover:text-[#191A2C]'
-            }`}
-          >
-            <Smartphone className="w-4 h-4" />
-            Phone
-          </button>
-        </div>
+          />
+        </md-chip-set>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label className="block text-xs font-bold text-[#4A4B5E]">
-              {channel === 'email' ? 'Admin email' : 'Mobile (+country code)'}
-            </label>
-            <input
-              type={channel === 'email' ? 'email' : 'tel'}
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-              disabled={codeSent}
-              placeholder={channel === 'email' ? 'admin@novaride.co' : '+917814002784'}
-              className="w-full h-12 px-4 rounded-2xl bg-white border border-[#191A2C]/15 text-sm font-semibold text-[#191A2C] focus:outline-none focus:border-[#3549D6] disabled:opacity-60"
-              required
-            />
-          </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submitAuth()
+          }}
+          className="space-y-4"
+        >
+          <md-outlined-text-field
+            className="w-full"
+            label={channel === 'email' ? 'Admin email' : 'Mobile (+country code)'}
+            type={channel === 'email' ? 'email' : 'tel'}
+            value={destination}
+            disabled={codeSent}
+            placeholder={channel === 'email' ? 'admin@novaride.co' : '+917814002784'}
+            onInput={(e) => setDestination((e.currentTarget as HTMLInputElement).value)}
+          />
 
           {codeSent && (
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-[#4A4B5E]">
-                6-digit verification code
-              </label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="123456"
-                className="w-full h-12 px-4 rounded-2xl bg-white border border-[#191A2C]/15 text-base font-bold tracking-[0.25em] tabular-nums text-[#191A2C] focus:outline-none focus:border-[#3549D6]"
-                autoFocus
-                required
-              />
-            </div>
+            <md-outlined-text-field
+              className="w-full"
+              label="6-digit verification code"
+              type="text"
+              maxLength={6}
+              value={code}
+              placeholder="123456"
+              onInput={(e) => {
+                const digits = (e.currentTarget as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)
+                setCode(digits)
+              }}
+            />
           )}
 
-          {error && (
-            <p className="text-sm font-semibold text-[#BA1A1A]">{error}</p>
-          )}
+          {error && <p className="text-sm font-semibold text-[#BA1A1A]">{error}</p>}
 
-          <button
-            type="submit"
+          <md-filled-button
+            className="w-full"
             disabled={busy || (codeSent ? code.length !== 6 : !destination.trim())}
-            className="w-full h-12 rounded-full bg-[#3549D6] text-white font-bold text-sm hover:bg-[#2B3DB8] disabled:opacity-50 transition-colors cursor-pointer"
+            onClick={() => void submitAuth()}
           >
             {busy ? 'Please wait…' : codeSent ? 'Verify & sign in' : 'Send code'}
-          </button>
+          </md-filled-button>
 
           {codeSent && (
-            <button
-              type="button"
+            <md-text-button
+              className="w-full"
               onClick={() => {
                 setCodeSent(false)
                 setCode('')
                 setError(null)
               }}
-              className="w-full text-xs font-bold text-[#3549D6] hover:underline cursor-pointer"
             >
               Change {channel}
-            </button>
+            </md-text-button>
           )}
         </form>
       </div>
@@ -272,7 +252,7 @@ function AdminDashboard({
   }, [])
 
   useEffect(() => {
-    loadData()
+    void loadData()
   }, [loadData])
 
   const filteredUsers = useMemo(() => {
@@ -304,7 +284,7 @@ function AdminDashboard({
 
   return (
     <div className="min-h-screen bg-[#FBF8FF]">
-      <header className="sticky top-0 z-10 bg-[#FBF8FF]/90 backdrop-blur border-b border-[#191A2C]/10">
+      <header className="sticky top-0 z-10 bg-[#FBF8FF]/90 backdrop-blur">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <span className="text-2xl font-extrabold tracking-tight text-[#3549D6]">nova</span>
@@ -314,28 +294,21 @@ function AdminDashboard({
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={loadData}
-              disabled={loading}
-              className="h-9 px-3.5 rounded-full bg-[#EFEDF7] text-[#191A2C] text-xs font-bold flex items-center gap-1.5 hover:bg-[#E9E7F2] cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            {loading && <md-circular-progress indeterminate className="w-6 h-6" />}
+            <md-filled-tonal-button disabled={loading} onClick={() => void loadData()}>
+              <RefreshCw className="w-3.5 h-3.5 inline mr-1.5" />
               Refresh
-            </button>
+            </md-filled-tonal-button>
             <span className="hidden sm:inline text-xs font-semibold text-[#4A4B5E] px-2">
               {session.user.first_name}
             </span>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="h-9 px-3.5 rounded-full bg-[#FFDBCF] text-[#3A0B00] text-xs font-bold flex items-center gap-1.5 hover:opacity-90 cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" />
+            <md-outlined-button onClick={() => void onLogout()}>
+              <LogOut className="w-3.5 h-3.5 inline mr-1.5" />
               Log out
-            </button>
+            </md-outlined-button>
           </div>
         </div>
+        <md-divider />
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-8">
@@ -389,36 +362,28 @@ function AdminDashboard({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
-                <Search className="w-4 h-4 text-[#4A4B5E] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search name, phone, email"
-                  className="h-10 pl-9 pr-4 rounded-full bg-white border border-[#191A2C]/10 text-xs font-semibold text-[#191A2C] focus:outline-none focus:border-[#3549D6]"
-                />
-              </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <md-outlined-text-field
+                label="Search"
+                value={query}
+                placeholder="Name, phone, email"
+                onInput={(e) => setQuery((e.currentTarget as HTMLInputElement).value)}
+              />
 
-              <div className="flex items-center gap-1 p-1 rounded-full bg-[#E9E7F2]">
+              <md-chip-set>
                 {(['all', 'rider', 'driver', 'admin'] as const).map((r) => (
-                  <button
+                  <md-filter-chip
                     key={r}
-                    type="button"
+                    label={r.charAt(0).toUpperCase() + r.slice(1)}
+                    selected={roleFilter === r}
                     onClick={() => setRoleFilter(r)}
-                    className={`h-8 px-3 rounded-full text-xs font-bold capitalize transition-colors cursor-pointer ${
-                      roleFilter === r
-                        ? 'bg-[#3549D6] text-white'
-                        : 'text-[#4A4B5E] hover:text-[#191A2C]'
-                    }`}
-                  >
-                    {r}
-                  </button>
+                  />
                 ))}
-              </div>
+              </md-chip-set>
             </div>
           </div>
+
+          <md-divider />
 
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -457,18 +422,27 @@ function AdminDashboard({
                       {new Date(u.created_at).toLocaleDateString()}
                     </td>
                     <td className="py-3.5 pl-4 text-right">
-                      <select
+                      <md-outlined-select
                         value={u.role}
                         disabled={updatingId === u.id}
-                        onChange={(e) =>
-                          handleRoleChange(u.id, e.target.value as 'rider' | 'driver' | 'admin')
-                        }
-                        className="h-8 px-3 rounded-full bg-white border border-[#191A2C]/15 text-xs font-bold text-[#191A2C] focus:outline-none focus:border-[#3549D6] cursor-pointer"
+                        onChange={(e) => {
+                          const next = (e.currentTarget as HTMLSelectElement).value as
+                            | 'rider'
+                            | 'driver'
+                            | 'admin'
+                          if (next && next !== u.role) void handleRoleChange(u.id, next)
+                        }}
                       >
-                        <option value="rider">rider</option>
-                        <option value="driver">driver</option>
-                        <option value="admin">admin</option>
-                      </select>
+                        <md-select-option value="rider" selected={u.role === 'rider'}>
+                          <div slot="headline">rider</div>
+                        </md-select-option>
+                        <md-select-option value="driver" selected={u.role === 'driver'}>
+                          <div slot="headline">driver</div>
+                        </md-select-option>
+                        <md-select-option value="admin" selected={u.role === 'admin'}>
+                          <div slot="headline">admin</div>
+                        </md-select-option>
+                      </md-outlined-select>
                     </td>
                   </tr>
                 ))}
