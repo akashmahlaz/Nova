@@ -21,8 +21,10 @@ use axum::{
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::FromRow;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
+use webauthn_rs_proto::{AuthenticatorTransport, RegisteredExtensions, UserVerificationPolicy};
 
 use crate::{error::ApiError, AppState};
 use super::{issue_session, load_user, User};
@@ -150,14 +152,37 @@ async fn register_verify(
         return Err(ApiError::Conflict("passkey_already_registered"));
     }
 
-    let passkey_json = serde_json::to_string(&passkey).map_err(|_| ApiError::Internal)?;
+    let cred: Credential = passkey.into();
+    let public_key_cbor = serde_cbor_2::to_vec(&cred.cred).map_err(|_| ApiError::Internal)?;
+    let policy_str = match cred.registration_policy {
+        UserVerificationPolicy::Required => "required",
+        UserVerificationPolicy::Preferred => "preferred",
+        UserVerificationPolicy::Discouraged_DO_NOT_USE => "discouraged",
+    };
+    let fmt_str = format!("{:?}", cred.attestation_format);
+    let transports: Option<Vec<String>> = cred.transports.as_ref().map(|ts| {
+        ts.iter().map(|t| format!("{:?}", t).to_lowercase()).collect()
+    });
+
     sqlx::query(
-        "INSERT INTO passkey_credentials (id, user_id, credential_id, passkey) VALUES ($1, $2, $3, $4::jsonb)",
+        "INSERT INTO passkey_credentials (
+            id, user_id, credential_id, cred_id_raw, public_key_cbor,
+            counter, user_verified, backup_eligible, backup_state,
+            registration_policy, attestation_format, transports
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(Uuid::now_v7())
     .bind(user.id)
     .bind(&cred_id)
-    .bind(&passkey_json)
+    .bind(cred.cred_id.as_slice())
+    .bind(&public_key_cbor)
+    .bind(cred.counter as i64)
+    .bind(cred.user_verified)
+    .bind(cred.backup_eligible)
+    .bind(cred.backup_state)
+    .bind(policy_str)
+    .bind(&fmt_str)
+    .bind(&transports)
     .execute(&st.pool)
     .await?;
 
@@ -218,17 +243,64 @@ async fn login_verify(
         .identify_discoverable_authentication(&auth_credential)
         .map_err(|_| ApiError::Unauthorized)?;
 
-    // Load the stored passkey for this credential.
+    #[derive(FromRow)]
+    struct PasskeyRow {
+        cred_id_raw: Vec<u8>,
+        public_key_cbor: Vec<u8>,
+        counter: i64,
+        user_verified: bool,
+        backup_eligible: bool,
+        backup_state: bool,
+        registration_policy: String,
+        transports: Option<Vec<String>>,
+    }
+
+    // Load the stored passkey from normalized relational columns.
     let cred_id_b64 = base64url_encode(_cred_id_bytes);
-    let passkey_json: Option<String> = sqlx::query_scalar(
-        "SELECT passkey::text FROM passkey_credentials WHERE credential_id = $1 AND user_id = $2",
+    let row = sqlx::query_as::<_, PasskeyRow>(
+        "SELECT cred_id_raw, public_key_cbor, counter, user_verified, backup_eligible,
+                backup_state, registration_policy, transports
+         FROM passkey_credentials
+         WHERE credential_id = $1 AND user_id = $2",
     )
     .bind(&cred_id_b64)
     .bind(user_id)
     .fetch_optional(&st.pool)
-    .await?;
-    let passkey_json = passkey_json.ok_or(ApiError::Unauthorized)?;
-    let passkey: Passkey = serde_json::from_str(&passkey_json).map_err(|_| ApiError::Internal)?;
+    .await?
+    .ok_or(ApiError::Unauthorized)?;
+
+    let cose_key: COSEKey = serde_cbor_2::from_slice(&row.public_key_cbor).map_err(|_| ApiError::Internal)?;
+    let policy = match row.registration_policy.as_str() {
+        "preferred" => UserVerificationPolicy::Preferred,
+        "discouraged" => UserVerificationPolicy::Discouraged_DO_NOT_USE,
+        _ => UserVerificationPolicy::Required,
+    };
+    let transports = row.transports.map(|ts| {
+        ts.into_iter()
+            .filter_map(|t| match t.as_str() {
+                "usb" => Some(AuthenticatorTransport::Usb),
+                "nfc" => Some(AuthenticatorTransport::Nfc),
+                "ble" => Some(AuthenticatorTransport::Ble),
+                "internal" => Some(AuthenticatorTransport::Internal),
+                "hybrid" => Some(AuthenticatorTransport::Hybrid),
+                _ => None,
+            })
+            .collect()
+    });
+    let cred = Credential {
+        cred_id: row.cred_id_raw.into(),
+        cred: cose_key,
+        counter: row.counter as u32,
+        transports,
+        user_verified: row.user_verified,
+        backup_eligible: row.backup_eligible,
+        backup_state: row.backup_state,
+        registration_policy: policy,
+        extensions: RegisteredExtensions::none(),
+        attestation: ParsedAttestation::default(),
+        attestation_format: AttestationFormat::None,
+    };
+    let passkey: Passkey = cred.into();
     let discoverable: DiscoverableKey = (&passkey).into();
 
     let auth_result = webauthn
