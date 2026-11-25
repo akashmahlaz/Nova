@@ -54,8 +54,14 @@ object AuthStore {
         prefs?.edit()?.putString(KEY_SESSION, Json.encodeToString(Session.serializer(), value))?.apply()
     }
 
+    fun updateUser(user: User) {
+        val current = session ?: return
+        saveSession(current.copy(user = user))
+    }
+
     fun clearSession() {
         session = null
         prefs?.edit()?.remove(KEY_SESSION)?.apply()
+        com.nova.rider.data.profile.ProfileStore.clear()
     }
 }

@@ -26,14 +26,19 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.BasicAlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -75,7 +80,9 @@ import com.nova.rider.data.Sample
 import com.nova.rider.data.auth.AuthStore
 import com.nova.rider.data.auth.NovaApi
 import com.nova.rider.data.auth.PasskeyManager
+import com.nova.rider.data.auth.SavedPlace
 import com.nova.rider.data.auth.authErrorMessage
+import com.nova.rider.data.profile.ProfileStore
 import com.nova.rider.feature.common.TabPage
 import com.nova.rider.navigation.DriverCancelled
 import com.nova.rider.navigation.EditProfile
@@ -240,20 +247,48 @@ fun SubPage(
 @Composable
 fun EditProfileScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
     val user = AuthStore.session?.user
-    val riderName = listOfNotNull(
-        user?.firstName?.ifBlank { null },
-        user?.lastName?.ifBlank { null },
-    ).joinToString(" ").ifBlank { Sample.riderName }
-    val riderPhone = user?.phone ?: Sample.riderPhone
-    val riderInitials = listOfNotNull(
-        user?.firstName?.firstOrNull()?.uppercaseChar(),
-        user?.lastName?.firstOrNull()?.uppercaseChar(),
-    ).joinToString("").ifBlank { Sample.riderInitials }
+    var firstName by rememberSaveable(user?.firstName) { mutableStateOf(user?.firstName.orEmpty()) }
+    var lastName by rememberSaveable(user?.lastName) { mutableStateOf(user?.lastName.orEmpty()) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
 
-    var name by rememberSaveable { mutableStateOf(riderName) }
-    var email by rememberSaveable { mutableStateOf(user?.email ?: "akash@example.co.nz") }
-    SubPage("Edit profile", onBack = { nav.back() }, bottom = { NovaButton("Save changes", onClick = { nav.back() }, enabled = name.isNotBlank()) }) {
+    LaunchedEffect(Unit) { ProfileStore.refreshIfNeeded() }
+
+    val riderInitials = listOfNotNull(
+        firstName.trim().firstOrNull()?.uppercaseChar(),
+        lastName.trim().firstOrNull()?.uppercaseChar(),
+    ).joinToString("").ifBlank { Sample.riderInitials }
+    val primaryContact = ProfileStore.contacts.firstOrNull()
+    val contactSummary = primaryContact?.let { "${it.name} · ${it.phone}" } ?: "Add a trusted contact"
+
+    SubPage(
+        "Edit profile",
+        onBack = { nav.back() },
+        bottom = {
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+            NovaButton(
+                if (busy) "Saving…" else "Save changes",
+                onClick = {
+                    scope.launch {
+                        busy = true
+                        error = null
+                        try {
+                            val updated = NovaApi.updateProfile(firstName.trim(), lastName.trim())
+                            AuthStore.updateUser(updated)
+                            nav.back()
+                        } catch (e: Throwable) {
+                            error = authErrorMessage(e)
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+                enabled = firstName.isNotBlank() && !busy,
+            )
+        },
+    ) {
         Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 6.dp).size(120.dp)) {
             CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 120.dp, shape = NovaShape.Sunny)
             Surface(
@@ -261,15 +296,38 @@ fun EditProfileScreen(nav: Navigator) {
                 border = BorderStroke(3.dp, c.surface), modifier = Modifier.align(Alignment.BottomEnd).offset(y = (-4).dp).size(44.dp),
             ) { Box(contentAlignment = Alignment.Center) { Icon(NovaIcons.Camera, "Change photo", Modifier.size(20.dp)) } }
         }
-        NovaTextField(name, { name = it }, "Preferred name", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
-        NovaTextField(email, { email = it }, "Email", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-        ReadOnlyField("Mobile", riderPhone) {
-            Row(Modifier.height(28.dp).clip(CircleShape).background(NovaPalette.Mint).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Icon(NovaIcons.Check, null, Modifier.size(14.dp), tint = NovaPalette.OnMint)
-                Text("Verified", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = NovaPalette.OnMint)
-            }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            NovaTextField(
+                firstName,
+                { firstName = it },
+                "First name",
+                Modifier.weight(1f),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+            )
+            NovaTextField(
+                lastName,
+                { lastName = it },
+                "Last name",
+                Modifier.weight(1f),
+                placeholder = "Optional",
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+            )
         }
-        ReadOnlyField("Emergency contact", "Mum · +64 27 555 0142", onClick = { nav.go(Safety) }) { Icon(NovaIcons.Chev, null) }
+        ReadOnlyField("Email", user?.email ?: "Not set") {
+            if (!user?.email.isNullOrBlank()) VerifiedPill()
+        }
+        ReadOnlyField("Mobile", user?.phone ?: "Not set") {
+            if (!user?.phone.isNullOrBlank()) VerifiedPill()
+        }
+        ReadOnlyField("Emergency contact", contactSummary, onClick = { nav.go(Safety) }) { Icon(NovaIcons.Chev, null) }
+    }
+}
+
+@Composable
+private fun VerifiedPill() {
+    Row(Modifier.height(28.dp).clip(CircleShape).background(NovaPalette.Mint).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(NovaIcons.Check, null, Modifier.size(14.dp), tint = NovaPalette.OnMint)
+        Text("Verified", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = NovaPalette.OnMint)
     }
 }
 
@@ -287,44 +345,174 @@ private fun ReadOnlyField(label: String, value: String, onClick: (() -> Unit)? =
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedPlacesScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var suggestion by rememberSaveable { mutableStateOf(true) }
-    var savedSylvia by rememberSaveable { mutableStateOf(false) }
-    val places = buildList {
-        add(Triple("Home", Sample.pickupFull, NovaIcons.Home to (c.primaryContainer to c.onPrimaryContainer)))
-        add(Triple("Work", "Commercial Bay, 7 Queen St", NovaIcons.Work to (c.tertiaryContainer to c.onTertiaryContainer)))
-        add(Triple("Gym", "Les Mills, 186 Victoria St W", NovaIcons.Flame to (NovaPalette.Mint to NovaPalette.OnMint)))
-        if (savedSylvia) add(Triple("Sylvia Park", Sample.destinationAddress, NovaIcons.Pin to (c.secondaryContainer to c.onSecondaryContainer)))
+    val scope = rememberCoroutineScope()
+    var showSheet by remember { mutableStateOf(false) }
+    var editingKind by remember { mutableStateOf("custom") }
+    var editingLabel by remember { mutableStateOf("") }
+    var editingAddress by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) { ProfileStore.refresh() }
+
+    val places = ProfileStore.places
+
+    fun openEditor(kind: String = "custom", label: String = "", address: String = "") {
+        editingKind = kind
+        editingLabel = label
+        editingAddress = address
+        error = null
+        showSheet = true
     }
+
     SubPage("Saved places", onBack = { nav.back() }) {
-        SegmentedColumn {
-            places.forEachIndexed { i, (name, addr, style) ->
-                NovaListItem(i, places.size, name, supporting = addr, leading = { IconTile(style.first, style.second.first, style.second.second) }, trailing = { Icon(NovaIcons.Edit, "Edit $name", Modifier.size(20.dp)) }, onClick = { nav.go(PinMap) })
+        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+        if (places.isEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surfaceContainerLow).padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("No saved places yet", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Save Home, Work, or frequent destinations for one-tap booking.", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+            }
+        } else {
+            SegmentedColumn {
+                places.forEachIndexed { i, place ->
+                    val (icon, bg, fg) = placeStyle(place.kind, c)
+                    NovaListItem(
+                        i,
+                        places.size,
+                        place.label,
+                        supporting = place.address,
+                        leading = { IconTile(icon, bg, fg) },
+                        trailing = {
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        runCatching { ProfileStore.deletePlace(place.id) }
+                                            .onFailure { error = authErrorMessage(it) }
+                                    }
+                                },
+                            ) {
+                                Icon(NovaIcons.Close, "Remove ${place.label}", Modifier.size(20.dp))
+                            }
+                        },
+                        onClick = { openEditor(place.kind, place.label, place.address) },
+                    )
+                }
             }
         }
-        Surface(onClick = { nav.go(PinMap) }, shape = RoundedCornerShape(16.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth().height(56.dp).dashedBorder(c.outline)) {
+        Surface(onClick = { openEditor() }, shape = RoundedCornerShape(16.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth().height(56.dp).dashedBorder(c.outline)) {
             Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Icon(NovaIcons.Plus, null, Modifier.size(20.dp)); Spacer(Modifier.size(8.dp)); Text("Add a place", fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
         }
-        if (suggestion) {
-            Column(Modifier.clip(RoundedCornerShape(28.dp)).background(c.secondaryContainer).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ShapeBadge(NovaShape.Cookie4, 48.dp, c.primary) { Icon(NovaIcons.Star, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
-                    Text(
-                        buildAnnotatedString { append("You've been to "); withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) { append(Sample.destination) }; append(" 6 times this month. Save it for one-tap booking?") },
-                        fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold, color = c.onSecondaryContainer,
+    }
+
+    if (showSheet) {
+        AddPlaceSheet(
+            initialKind = editingKind,
+            initialLabel = editingLabel,
+            initialAddress = editingAddress,
+            onDismiss = { showSheet = false },
+            onSave = { kind, label, address ->
+                ProfileStore.savePlace(kind, label, address)
+                showSheet = false
+            },
+        )
+    }
+}
+
+private fun placeStyle(kind: String, c: androidx.compose.material3.ColorScheme): Triple<ImageVector, Color, Color> = when (kind) {
+    "home" -> Triple(NovaIcons.Home, c.primaryContainer, c.onPrimaryContainer)
+    "work" -> Triple(NovaIcons.Work, c.tertiaryContainer, c.onTertiaryContainer)
+    else -> Triple(NovaIcons.Pin, c.secondaryContainer, c.onSecondaryContainer)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddPlaceSheet(
+    initialKind: String,
+    initialLabel: String,
+    initialAddress: String,
+    onDismiss: () -> Unit,
+    onSave: suspend (kind: String, label: String, address: String) -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var kind by remember { mutableStateOf(initialKind) }
+    var label by remember {
+        mutableStateOf(
+            initialLabel.ifBlank {
+                when (initialKind) {
+                    "home" -> "Home"
+                    "work" -> "Work"
+                    else -> ""
+                }
+            },
+        )
+    }
+    var address by remember { mutableStateOf(initialAddress) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Save a place", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("home" to "Home", "work" to "Work", "custom" to "Other").forEach { (k, title) ->
+                    val selected = kind == k
+                    FilterChip(
+                        selected = selected,
+                        onClick = {
+                            kind = k
+                            if (k == "home" && (label.isBlank() || label == "Work")) label = "Home"
+                            if (k == "work" && (label.isBlank() || label == "Home")) label = "Work"
+                            if (k == "custom" && (label == "Home" || label == "Work")) label = ""
+                        },
+                        label = { Text(title) },
                     )
                 }
-                Row(Modifier.padding(start = 60.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(onClick = { savedSylvia = true; suggestion = false }, shape = CircleShape, color = c.primary, contentColor = Color.White, modifier = Modifier.height(40.dp)) {
-                        Box(Modifier.padding(horizontal = 16.dp), contentAlignment = Alignment.Center) { Text("Save", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold) }
-                    }
-                    TextButton(onClick = { suggestion = false }) { Text("Not now", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.onSecondaryContainer) }
-                }
             }
+            NovaTextField(
+                label,
+                { label = it },
+                "Label",
+                placeholder = "e.g. Home, Gym, Airport",
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+            )
+            NovaTextField(
+                address,
+                { address = it },
+                "Street address",
+                placeholder = "12 Queen St, Auckland",
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+            )
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+            NovaButton(
+                if (busy) "Saving…" else "Save place",
+                enabled = label.isNotBlank() && address.trim().length >= 2 && !busy,
+                onClick = {
+                    scope.launch {
+                        busy = true
+                        error = null
+                        try {
+                            onSave(kind, label.trim(), address.trim())
+                        } catch (e: Throwable) {
+                            error = authErrorMessage(e)
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.height(8.dp))
         }
     }
 }

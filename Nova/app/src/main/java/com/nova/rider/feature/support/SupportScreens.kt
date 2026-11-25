@@ -36,6 +36,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -43,8 +44,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,6 +79,8 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -82,13 +88,18 @@ import androidx.compose.ui.unit.sp
 import com.nova.designsystem.components.CookieAvatar
 import com.nova.designsystem.components.IconTile
 import com.nova.designsystem.components.NovaButton
+import com.nova.designsystem.components.NovaListItem
 import com.nova.designsystem.components.NovaShape
+import com.nova.designsystem.components.NovaTextField
 import com.nova.designsystem.components.NovaTopBar
+import com.nova.designsystem.components.SegmentedColumn
 import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
 import com.nova.rider.data.Sample
+import com.nova.rider.data.auth.authErrorMessage
+import com.nova.rider.data.profile.ProfileStore
 import com.nova.rider.feature.account.SubPage
 import com.nova.rider.navigation.LostItem
 import com.nova.rider.navigation.Navigator
@@ -102,11 +113,22 @@ private val SafetyContainer = Color(0xFFF5EDEC)
 private val SafetyInk = Color(0xFF201A19)
 private val SafetyVariant = Color(0xFF534341)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SafetyScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val hold = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
+    var showContactsSheet by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { ProfileStore.refreshIfNeeded() }
+    val contacts = ProfileStore.contacts
+    val watchingSummary = when (contacts.size) {
+        0 -> "Add a trusted contact to share trips"
+        1 -> "${contacts[0].name} can watch your trip"
+        else -> "${contacts[0].name} and ${contacts.size - 1} other${if (contacts.size > 2) "s" else ""}"
+    }
+
     Column(Modifier.fillMaxSize().background(SafetySurface)) {
         NovaTopBar(onBack = { nav.back() }, title = "Safety")
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -154,18 +176,103 @@ fun SafetyScreen(nav: Navigator) {
                         Icon(NovaIcons.Share, null)
                         Column(Modifier.weight(1f)) {
                             Text("Share live trip", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                            Text("Mum and Rohan are watching", fontSize = 13.sp)
+                            Text(watchingSummary, fontSize = 13.sp)
                         }
-                        Row {
-                            MiniAvatar("M", c.primaryContainer, c.onPrimaryContainer, c.errorContainer)
-                            MiniAvatar("R", NovaPalette.Mint, NovaPalette.OnMint, c.errorContainer, Modifier.offset(x = (-8).dp))
+                        if (contacts.isNotEmpty()) {
+                            Row {
+                                contacts.take(2).forEachIndexed { idx, contact ->
+                                    MiniAvatar(
+                                        contact.name.firstOrNull()?.uppercase() ?: "?",
+                                        if (idx == 0) c.primaryContainer else NovaPalette.Mint,
+                                        if (idx == 0) c.onPrimaryContainer else NovaPalette.OnMint,
+                                        c.errorContainer,
+                                        if (idx == 1) Modifier.offset(x = (-8).dp) else Modifier,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
                 SafetyRow(NovaIcons.Mic, "Record trip audio", RoundedCornerShape(4.dp)) {}
                 SafetyRow(NovaIcons.Flag, "Report a safety issue", RoundedCornerShape(4.dp)) { nav.go(SupportChat) }
-                SafetyRow(NovaIcons.People, "Trusted contacts", RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp), trailing = "2") {}
+                SafetyRow(NovaIcons.People, "Trusted contacts", RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp), trailing = contacts.size.toString()) {
+                    showContactsSheet = true
+                }
             }
+        }
+    }
+
+    if (showContactsSheet) {
+        TrustedContactsSheet(onDismiss = { showContactsSheet = false })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TrustedContactsSheet(onDismiss: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    val contacts = ProfileStore.contacts
+    var name by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var relationship by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Trusted contacts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            if (contacts.isNotEmpty()) {
+                SegmentedColumn {
+                    contacts.forEachIndexed { idx, contact ->
+                        val sub = listOfNotNull(contact.relationship.ifBlank { null }, contact.phone).joinToString(" · ")
+                        NovaListItem(
+                            idx,
+                            contacts.size,
+                            contact.name,
+                            supporting = sub,
+                            trailing = {
+                                IconButton(
+                                    onClick = {
+                                        scope.launch {
+                                            runCatching { ProfileStore.deleteContact(contact.id) }
+                                                .onFailure { error = authErrorMessage(it) }
+                                        }
+                                    },
+                                ) { Icon(NovaIcons.Close, "Remove ${contact.name}", Modifier.size(18.dp)) }
+                            },
+                        )
+                    }
+                }
+            }
+            NovaTextField(name, { name = it }, "Contact name", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
+            NovaTextField(phone, { phone = it }, "Mobile (+country code)", placeholder = "+64 21 555 0142", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+            NovaTextField(relationship, { relationship = it }, "Relationship (optional)", placeholder = "Mum, Partner, Friend", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+            NovaButton(
+                if (busy) "Adding…" else "Add trusted contact",
+                enabled = name.isNotBlank() && phone.trim().startsWith("+") && !busy,
+                onClick = {
+                    scope.launch {
+                        busy = true
+                        error = null
+                        try {
+                            ProfileStore.addContact(name.trim(), phone.trim(), relationship.trim())
+                            name = ""
+                            phone = ""
+                            relationship = ""
+                        } catch (e: Throwable) {
+                            error = authErrorMessage(e)
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.height(8.dp))
         }
     }
 }

@@ -158,7 +158,7 @@ fn check_code(value: &str, _channel: &Channel) -> garde::Result {
 }
 
 /// Turns the first garde failure into a stable API error code the apps can show.
-fn validation_error(report: garde::Report) -> ApiError {
+pub(crate) fn validation_error(report: garde::Report) -> ApiError {
     let code = report
         .iter()
         .next()
@@ -515,13 +515,17 @@ async fn logout(State(st): State<AppState>, Json(req): Json<LogoutReq>) -> Resul
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
+pub(crate) fn require_user_id(st: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(ApiError::Unauthorized)?;
     let claims = jwt::decode_typed(&st.cfg.jwt_secret, token, jwt::TYP_ACCESS)?;
-    let user_id = Uuid::parse_str(&claims.sub).map_err(|_| ApiError::Unauthorized)?;
+    Uuid::parse_str(&claims.sub).map_err(|_| ApiError::Unauthorized)
+}
+
+async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
+    let user_id = require_user_id(&st, &headers)?;
     Ok(Json(load_user(&st, user_id).await?))
 }

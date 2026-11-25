@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod error;
+mod profile;
 
 use std::{sync::Arc, time::Duration};
 
@@ -130,6 +131,7 @@ async fn main() {
             }),
         )
         .merge(auth::router())
+        .merge(profile::router())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(TraceLayer::new_for_http())

@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,7 @@ import com.nova.designsystem.theme.NovaTheme
 import com.nova.rider.data.Sample
 import com.nova.rider.data.SearchResults
 import com.nova.rider.data.auth.AuthStore
+import com.nova.rider.data.profile.ProfileStore
 import com.nova.rider.feature.common.DotKind
 import com.nova.rider.feature.common.MapFab
 import com.nova.rider.feature.common.RouteDot
@@ -88,12 +90,17 @@ fun HomeScreen(nav: Navigator) {
             userDot(196f, 252f, c.primary)
         }
         // Expressive search bar
+        LaunchedEffect(Unit) { ProfileStore.refreshIfNeeded() }
+
         val user = AuthStore.session?.user
         val riderName = user?.firstName?.ifBlank { null } ?: Sample.riderName
         val riderInitials = listOfNotNull(
             user?.firstName?.firstOrNull()?.uppercaseChar(),
             user?.lastName?.firstOrNull()?.uppercaseChar(),
         ).joinToString("").ifBlank { Sample.riderInitials }
+        val homePlace = ProfileStore.homePlace()
+        val workPlace = ProfileStore.workPlace()
+        val customPlaces = ProfileStore.customPlaces()
 
         Surface(
             onClick = { nav.go(Search) },
@@ -120,16 +127,50 @@ fun HomeScreen(nav: Navigator) {
                         weights = listOf(1f, 1f, 1.2f),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        SavedPlaceCard("Home", "18 min", c.primaryContainer, c.onPrimaryContainer, Modifier.weight(1f), onClick = { nav.go(RideOptions) }) {
+                        SavedPlaceCard(
+                            "Home",
+                            homePlace?.address ?: "Tap to set",
+                            c.primaryContainer,
+                            c.onPrimaryContainer,
+                            Modifier.weight(1f),
+                            onClick = { nav.go(if (homePlace != null) RideOptions else com.nova.rider.navigation.SavedPlaces) },
+                        ) {
                             ShapeBadge(NovaShape.Cookie, 44.dp, c.primary) { Icon(NovaIcons.HomeFilled, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
                         }
-                        SavedPlaceCard("Work", "26 min", c.tertiaryContainer, c.onTertiaryContainer, Modifier.weight(1f), onClick = { nav.go(RideOptions) }) {
+                        SavedPlaceCard(
+                            "Work",
+                            workPlace?.address ?: "Tap to set",
+                            c.tertiaryContainer,
+                            c.onTertiaryContainer,
+                            Modifier.weight(1f),
+                            onClick = { nav.go(if (workPlace != null) RideOptions else com.nova.rider.navigation.SavedPlaces) },
+                        ) {
                             IconTile(NovaIcons.Work, c.tertiary, Color.White, size = 44.dp)
                         }
                     }
                     SegmentedColumn {
-                        NovaListItem(0, 2, "Sylvia Park", supporting = Sample.destinationAddress, leading = { Icon(NovaIcons.Clock, null) }, onClick = { nav.go(RideOptions) })
-                        NovaListItem(1, 2, "Auckland Airport", supporting = "Ray Emery Dr, Māngere", leading = { Icon(NovaIcons.Clock, null) }, onClick = { nav.go(RideOptions) })
+                        if (customPlaces.isEmpty()) {
+                            NovaListItem(
+                                0,
+                                1,
+                                "Save favourite places",
+                                supporting = "Add frequent spots for one-tap rides",
+                                leading = { Icon(NovaIcons.Pin, null) },
+                                onClick = { nav.go(com.nova.rider.navigation.SavedPlaces) },
+                            )
+                        } else {
+                            val shown = customPlaces.take(2)
+                            shown.forEachIndexed { idx, place ->
+                                NovaListItem(
+                                    idx,
+                                    shown.size,
+                                    place.label,
+                                    supporting = place.address,
+                                    leading = { Icon(NovaIcons.Pin, null) },
+                                    onClick = { nav.go(RideOptions) },
+                                )
+                            }
+                        }
                     }
                 }
             }
