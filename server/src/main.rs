@@ -140,7 +140,6 @@ async fn main() {
         .merge(auth::router())
         .merge(profile::router())
         .merge(admin::router())
-        .layer(CorsLayer::permissive())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
@@ -148,6 +147,7 @@ async fn main() {
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15)))
         // Auth payloads are tiny; anything bigger is rejected before it is read.
         .layer(RequestBodyLimitLayer::new(64 * 1024))
+        .layer(CorsLayer::permissive())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
