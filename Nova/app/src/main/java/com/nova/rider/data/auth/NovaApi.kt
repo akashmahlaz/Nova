@@ -134,7 +134,7 @@ object NovaApi {
     /** Authenticated: returns the WebAuthn creation challenge as a JSON string for Credential Manager. */
     suspend fun passkeyRegisterOptions(): String = withContext(Dispatchers.IO) {
         val res = requestAuth("POST", "/v1/auth/passkey/register/options", null)
-        res.toString()
+        (res["publicKey"]?.jsonObject ?: res).toString()
     }
 
     /** Authenticated: sends the credential produced by `createPasskey()` back to the server. */
@@ -150,7 +150,8 @@ object NovaApi {
     /** Returns the assertion challenge plus the opaque state token the client must echo back. */
     suspend fun passkeyLoginOptions(): Pair<String, String> = withContext(Dispatchers.IO) {
         val res = request("POST", "/v1/auth/passkey/login/options", null)
-        val options = res.getValue("options").toString()
+        val raw = res.getValue("options").jsonObject
+        val options = (raw["publicKey"]?.jsonObject ?: raw).toString()
         val token = res.str("state_token")
         options to token
     }
