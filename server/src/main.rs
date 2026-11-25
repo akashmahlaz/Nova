@@ -6,11 +6,16 @@ mod profile;
 
 use std::{sync::Arc, time::Duration};
 
-use axum::{http::StatusCode, routing::get, Router};
+use axum::{
+    extract::State,
+    http::{header, HeaderValue, Method, StatusCode},
+    routing::get,
+    Router,
+};
 use redis::aio::ConnectionManager;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, CorsLayer},
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     timeout::TimeoutLayer,
@@ -107,9 +112,10 @@ async fn main() {
         .route("/health", get(|| async { "Dispatch engine is running! 🏃" }))
         .route(
             "/.well-known/assetlinks.json",
-            get(|| async {
-                let raw = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT").unwrap_or_default();
-                let fingerprints: Vec<&str> = raw
+            get(|State(st): State<AppState>| async move {
+                let fingerprints: Vec<&str> = st
+                    .cfg
+                    .passkey_assetlinks_fingerprint
                     .split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
@@ -147,7 +153,16 @@ async fn main() {
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15)))
         // Auth payloads are tiny; anything bigger is rejected before it is read.
         .layer(RequestBodyLimitLayer::new(64 * 1024))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list([
+                    HeaderValue::from_static("https://nova-web-production.punjab.fireclaw.in"),
+                    HeaderValue::from_static("http://localhost:3000"),
+                    HeaderValue::from_static("http://127.0.0.1:3000"),
+                ]))
+                .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)

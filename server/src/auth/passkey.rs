@@ -52,11 +52,9 @@ fn android_apk_origin(hex_fp: &str) -> Option<Url> {
 fn build_webauthn(st: &AppState) -> Result<Webauthn, ApiError> {
     let origin = Url::parse(&st.cfg.passkey_rp_origin).map_err(|_| ApiError::Internal)?;
     let mut builder = WebauthnBuilder::new(&st.cfg.passkey_rp_id, &origin).map_err(|_| ApiError::Internal)?;
-    if let Ok(raw) = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT") {
-        for fp in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            if let Some(apk_origin) = android_apk_origin(fp) {
-                builder = builder.append_allowed_origin(&apk_origin);
-            }
+    for fp in st.cfg.passkey_assetlinks_fingerprint.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(apk_origin) = android_apk_origin(fp) {
+            builder = builder.append_allowed_origin(&apk_origin);
         }
     }
     builder.build().map_err(|_| ApiError::Internal)
