@@ -2,7 +2,11 @@ package com.nova.rider.data.auth
 
 /** Maps server error codes to the short messages shown under the auth fields. */
 fun authErrorMessage(error: Throwable): String {
-    val apiEx = error as? ApiException ?: return "Something went wrong. Try again."
+    val apiEx = error as? ApiException
+    if (apiEx == null) {
+        android.util.Log.e("AuthErrors", "Unexpected non-API error during auth", error)
+        return "Something went wrong. Try again."
+    }
     return when (apiEx.code) {
         "invalid_phone" -> "Enter a valid mobile number."
         "invalid_email" -> "Enter a valid email address."
