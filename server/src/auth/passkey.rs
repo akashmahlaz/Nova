@@ -152,7 +152,7 @@ async fn register_verify(
 
     let passkey_json = serde_json::to_string(&passkey).map_err(|_| ApiError::Internal)?;
     sqlx::query(
-        "INSERT INTO passkey_credentials (id, user_id, credential_id, passkey) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO passkey_credentials (id, user_id, credential_id, passkey) VALUES ($1, $2, $3, $4::jsonb)",
     )
     .bind(Uuid::now_v7())
     .bind(user.id)
@@ -221,7 +221,7 @@ async fn login_verify(
     // Load the stored passkey for this credential.
     let cred_id_b64 = base64url_encode(_cred_id_bytes);
     let passkey_json: Option<String> = sqlx::query_scalar(
-        "SELECT passkey FROM passkey_credentials WHERE credential_id = $1 AND user_id = $2",
+        "SELECT passkey::text FROM passkey_credentials WHERE credential_id = $1 AND user_id = $2",
     )
     .bind(&cred_id_b64)
     .bind(user_id)
