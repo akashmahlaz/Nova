@@ -20,6 +20,14 @@ pub struct Config {
     pub passkey_rp_origin: String,
     /// SHA-256 of the signing certificate, for `/.well-known/assetlinks.json`.
     pub passkey_assetlinks_fingerprint: String,
+    /// Server-side Google Maps Platform key (Places API (New), Routes API, Geocoding API).
+    /// Keep it separate from the Android key and restrict it to this server's IP + those 3 APIs.
+    /// `None` makes the /v1/geo and /v1/rides/quote endpoints return 503 `maps_unavailable`.
+    pub google_maps_api_key: Option<String>,
+    /// Twilio Programmable Messaging service for ride texts ("Akash booked you a ride"). Verify
+    /// (used for codes) can't send custom text, so this is a separate, optional service.
+    /// `None`: ride texts are skipped and logged.
+    pub twilio_messaging_service_sid: Option<String>,
 }
 
 #[derive(Clone)]
@@ -83,6 +91,8 @@ impl Config {
                 .unwrap_or_else(|| "http://localhost:3000".into()),
             passkey_assetlinks_fingerprint: optional("PASSKEY_ASSETLINKS_FINGERPRINT")
                 .unwrap_or_default(),
+            google_maps_api_key: optional("GOOGLE_MAPS_API_KEY"),
+            twilio_messaging_service_sid: optional("TWILIO_MESSAGING_SERVICE_SID"),
         })
     }
 }

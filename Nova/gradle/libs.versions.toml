@@ -1,6 +1,6 @@
 [versions]
 # Toolchain (latest as of Nov 2026)
-agp = "9.5.1"
+agp = "9.5.2"
 kotlin = "2.4.21"
 
 # AndroidX

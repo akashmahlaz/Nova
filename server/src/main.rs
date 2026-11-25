@@ -1,8 +1,11 @@
+mod account;
 mod admin;
 mod auth;
 mod config;
 mod error;
+mod geo;
 mod profile;
+mod rides;
 
 use std::{sync::Arc, time::Duration};
 
@@ -17,6 +20,7 @@ use sqlx::postgres::PgPoolOptions;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     limit::RequestBodyLimitLayer,
+    compression::CompressionLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     timeout::TimeoutLayer,
     trace::TraceLayer,
@@ -31,6 +35,8 @@ pub struct AppState {
     pub redis: ConnectionManager,
     pub cfg: Arc<Config>,
     pub http: reqwest::Client,
+    /// In-memory "H3 cell -> service area" memo (see geo::AreaCache).
+    pub areas: geo::AreaCache,
 }
 
 #[tokio::main]
@@ -73,11 +79,20 @@ async fn main() {
         .expect("failed to connect to Redis");
 
     let bind_addr = cfg.bind_addr.clone();
+    // Removes accounts whose 30-day deletion grace period is over (see account.rs).
+    account::spawn_deletion_purge(pool.clone());
+
     let state = AppState {
         pool,
         redis,
         cfg: Arc::new(cfg),
-        http: reqwest::Client::new(),
+        // One pooled client for Twilio, Resend and Google. Per-call timeouts are set where it's used;
+        // this is the outer bound so nothing can hang a worker.
+        http: reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("failed to build HTTP client"),
+        areas: geo::AreaCache::default(),
     };
 
     let app = Router::new()
@@ -145,6 +160,9 @@ async fn main() {
         )
         .merge(auth::router())
         .merge(profile::router())
+        .merge(geo::router())
+        .merge(rides::router())
+        .merge(account::router())
         .merge(admin::router())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -153,6 +171,8 @@ async fn main() {
         .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(15)))
         // Auth payloads are tiny; anything bigger is rejected before it is read.
         .layer(RequestBodyLimitLayer::new(64 * 1024))
+        // gzip JSON responses (search results, route polylines) for riders on mobile data.
+        .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list([

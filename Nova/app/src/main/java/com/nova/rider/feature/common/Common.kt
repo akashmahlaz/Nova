@@ -3,6 +3,15 @@ package com.nova.rider.feature.common
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.plus
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -105,15 +114,31 @@ fun TabPage(
     onTab: (com.nova.designsystem.components.RiderTab) -> Unit,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(horizontal = 8.dp))
-            content()
+    // Compact: bottom bar. Medium/expanded: side rail, and the page is a centred readable column.
+    val compact = currentWidthClass() == WidthClass.Compact
+    androidx.compose.foundation.layout.Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        if (!compact) {
+            com.nova.designsystem.components.RiderNavigationRail(
+                selected = tab, onSelect = onTab,
+                modifier = Modifier.fillMaxHeight().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Start + WindowInsetsSides.Vertical)),
+            )
         }
-        com.nova.designsystem.components.RiderNavigationBar(selected = tab, onSelect = onTab)
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).statusBarsPadding()
+                    .then(if (compact) Modifier else Modifier.navigationBarsPadding()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Column(
+                    Modifier.widthIn(max = ReadableContentWidth).fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(horizontal = 8.dp))
+                    content()
+                }
+            }
+            if (compact) com.nova.designsystem.components.RiderNavigationBar(selected = tab, onSelect = onTab)
+        }
     }
 }
 

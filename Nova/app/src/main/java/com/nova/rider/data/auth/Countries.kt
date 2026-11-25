@@ -59,6 +59,16 @@ object PhoneRegions {
         }
     }
 
+    /**
+     * A real-format example mobile number for [iso] from libphonenumber's metadata, for field
+     * placeholders: national ("21 234 5678") or international ("+64 21 234 5678"). Null if unknown.
+     */
+    fun exampleMobile(iso: String, international: Boolean = false): String? = runCatching {
+        val number = util.getExampleNumberForType(iso.uppercase(Locale.ROOT), PhoneNumberUtil.PhoneNumberType.MOBILE) ?: return null
+        if (international) util.format(number, PhoneNumberFormat.INTERNATIONAL)
+        else util.format(number, PhoneNumberFormat.NATIONAL).trimStart('0', ' ')
+    }.getOrNull()
+
     private fun displayName(iso: String): String =
         Locale.Builder().setRegion(iso).build().getDisplayCountry(Locale.getDefault()).ifBlank { iso }
 }

@@ -71,7 +71,6 @@ import com.nova.designsystem.theme.NovaPalette
 import com.nova.rider.data.Sample
 import com.nova.rider.feature.common.DriverRow
 import com.nova.rider.feature.common.MapFab
-import com.nova.rider.navigation.AddStop
 import com.nova.rider.navigation.Call
 import com.nova.rider.navigation.CancelRide
 import com.nova.rider.navigation.Chat
@@ -216,7 +215,7 @@ fun OnTripScreen(nav: Navigator) {
                     DriverRow()
                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         ConnectedAction("Share", NovaIcons.Share, RoundedCornerShape(28.dp, 8.dp, 8.dp, 28.dp), c.primaryContainer, c.onPrimaryContainer, 1f) { nav.go(ShareTrip) }
-                        ConnectedAction("Change stop", null, RoundedCornerShape(8.dp), c.surfaceContainerHighest, c.onSurface, 1.3f) { nav.go(AddStop) }
+                        ConnectedAction("Change stop", null, RoundedCornerShape(8.dp), c.surfaceContainerHighest, c.onSurface, 1.3f) { nav.go(com.nova.rider.navigation.Search) }
                         ConnectedAction("Arrived", null, RoundedCornerShape(8.dp, 28.dp, 28.dp, 8.dp), c.surfaceContainerHighest, c.onSurface, 1f) { nav.reset(TripComplete) }
                     }
                 }

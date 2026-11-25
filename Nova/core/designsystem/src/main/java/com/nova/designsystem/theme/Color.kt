@@ -133,3 +133,4 @@ internal val RiderExtendedColors = NovaExtendedColors(
 )
 
 val LocalNovaColors = staticCompositionLocalOf { RiderExtendedColors }
+

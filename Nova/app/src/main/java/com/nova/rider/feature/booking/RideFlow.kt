@@ -109,7 +109,6 @@ import com.nova.rider.feature.common.DotKind
 import com.nova.rider.feature.common.MapFab
 import com.nova.rider.feature.common.MapLabel
 import com.nova.rider.feature.common.RouteDot
-import com.nova.rider.navigation.AddStop
 import com.nova.rider.navigation.DriverEnRoute
 import com.nova.rider.navigation.FindingDriver
 import com.nova.rider.navigation.Navigator
@@ -121,10 +120,8 @@ import com.nova.rider.navigation.ShareTrip
 fun RideOptionsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var menu by remember { mutableStateOf(false) }
-    // Home's "For someone" asks who is riding as soon as the rider reaches the ride choice.
-    var forSomeone by rememberSaveable {
-        mutableStateOf(TripStore.bookingMode == TripStore.BookingMode.ForSomeone && TripStore.passenger == null)
-    }
+    // Who's riding is chosen on its own screen (from Home's "For someone", this chip or the menu).
+    fun chooseRider() = nav.go(com.nova.rider.navigation.ChooseRider(then = "back"))
     val scheduling = TripStore.bookingMode == TripStore.BookingMode.Schedule
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
@@ -136,12 +133,14 @@ fun RideOptionsScreen(nav: Navigator) {
     // Upfront prices from the server (locked there for 5 min). Re-entering this screen for the
     // same trip reuses the quote server side, so back/forward doesn't cost another Routes call.
     LaunchedEffect(pickupPlace, dropoffPlace) {
+        TripStore.dropExpiredQuote()
         if (TripStore.quote == null) TripStore.requestQuote()
     }
     val options = quote?.options.orEmpty()
     // The chosen ride type lives in TripStore so Schedule books the same one.
     val selected = options.firstOrNull { it.productId == TripStore.productId } ?: options.firstOrNull()
-    fun price(cents: Long) = TripFormat.money(cents, quote?.currency ?: "NZD")
+    // Prices only exist with a quote, which always carries its currency (from the service area).
+    fun price(cents: Long) = quote?.let { TripFormat.money(cents, it.currency) } ?: ""
 
     val camera = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom((pickupPlace?.point ?: GeoPoint(0.0, 0.0)).toLatLng(), if (pickupPlace != null) 13f else 2f)
@@ -223,11 +222,11 @@ fun RideOptionsScreen(nav: Navigator) {
                 TripStore.passenger?.let { p ->
                     InputChip(
                         selected = true,
-                        onClick = { forSomeone = true },
-                        label = { Text("For ${p.name} · ${p.phone}") },
+                        onClick = { chooseRider() },
+                        label = { Text("For ${p.name}", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis) },
                         leadingIcon = { Icon(NovaIcons.People, null, Modifier.size(InputChipDefaults.IconSize)) },
                         trailingIcon = {
-                            IconButton(onClick = { TripStore.passenger = null }, modifier = Modifier.size(24.dp)) {
+                            IconButton(onClick = { TripStore.rideFor(null) }, modifier = Modifier.size(24.dp)) {
                                 Icon(NovaIcons.Close, "Ride for myself", Modifier.size(InputChipDefaults.IconSize))
                             }
                         },
@@ -245,6 +244,11 @@ fun RideOptionsScreen(nav: Navigator) {
                                 onClick = {
                                     if (selected != null) {
                                         TripStore.productId = selected.productId
+                                        // "For someone" without a rider chosen: ask, never book for me silently.
+                                        if (TripStore.bookingMode == TripStore.BookingMode.ForSomeone && TripStore.passenger == null) {
+                                            chooseRider()
+                                            return@LeadingButton
+                                        }
                                         // Home's "Schedule": pick the time next, booking happens there.
                                         if (scheduling) nav.go(Schedule)
                                         else scope.launch { if (TripStore.book() != null) nav.go(FindingDriver) }
@@ -280,62 +284,18 @@ fun RideOptionsScreen(nav: Navigator) {
                             TripStore.addStop()
                             nav.popTo(com.nova.rider.navigation.Search)
                         })
-                        DropdownMenuItem(text = { Text("Book for someone else") }, leadingIcon = { Icon(NovaIcons.People, null) }, onClick = { menu = false; forSomeone = true })
+                        DropdownMenuItem(text = { Text("Book for someone else") }, leadingIcon = { Icon(NovaIcons.People, null) }, onClick = { menu = false; chooseRider() })
                     }
                 }
             }
         }
     }
-    if (forSomeone) ForSomeoneSheet(onDismiss = { forSomeone = false })
 }
 
 /** Server payment values with their labels, in the order shown. */
 private val PAYMENT_METHODS = listOf("gpay" to "GPay", "card" to "Card", "credit" to "Credit")
 
 fun paymentLabel(method: String): String = PAYMENT_METHODS.firstOrNull { it.first == method }?.second ?: method
-
-/**
- * "Book for someone else": who is riding. The driver sees this name and calls this number, and
- * the server validates the number (libphonenumber), so we only check it isn't blank here.
- */
-@Composable
-private fun ForSomeoneSheet(onDismiss: () -> Unit) {
-    val current = TripStore.passenger
-    var name by rememberSaveable { mutableStateOf(current?.name.orEmpty()) }
-    var phone by rememberSaveable { mutableStateOf(current?.phone.orEmpty()) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(
-            Modifier.padding(start = 24.dp, end = 24.dp, bottom = 24.dp).navigationBarsPadding().imePadding(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text("Who's riding?", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "The driver will see their name and can call them. They'll need to be at the pickup.",
-                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            NovaTextField(
-                name, { name = it }, "Rider's name",
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
-            )
-            NovaTextField(
-                phone, { phone = it }, "Rider's phone", placeholder = "+64 21 555 0123",
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone, imeAction = ImeAction.Done),
-            )
-            NovaButton(
-                "Save rider",
-                onClick = {
-                    TripStore.passenger = Passenger(name.trim(), phone.trim())
-                    onDismiss()
-                },
-                enabled = name.isNotBlank() && phone.count { it.isDigit() } >= 6,
-                height = 56.dp,
-            )
-            if (current != null) {
-                NovaOutlinedButton("I'm riding myself", onClick = { TripStore.passenger = null; onDismiss() }, modifier = Modifier.fillMaxWidth())
-            }
-        }
-    }
-}
 
 @Composable
 private fun RideRow(name: String, seats: Int, meta: String, price: String, selected: Boolean, first: Boolean, last: Boolean, onClick: () -> Unit) {
@@ -401,7 +361,10 @@ fun ScheduleScreen(nav: Navigator) {
 
     val pickupPlace = TripStore.pickup
     val dropoffPlace = TripStore.dropoff
-    LaunchedEffect(pickupPlace, dropoffPlace) { if (TripStore.quote == null) TripStore.requestQuote() }
+    LaunchedEffect(pickupPlace, dropoffPlace) {
+        TripStore.dropExpiredQuote()
+        if (TripStore.quote == null) TripStore.requestQuote()
+    }
     val quote = TripStore.quote
     val option = quote?.options?.let { o -> o.firstOrNull { it.productId == TripStore.productId } ?: o.firstOrNull() }
     val fare = option?.let { TripFormat.money(it.fareCents, quote.currency) }

@@ -1,5 +1,10 @@
 package com.nova.rider.feature.account
 
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -84,6 +89,7 @@ import com.nova.rider.data.auth.PasskeyManager
 import com.nova.rider.data.auth.SavedPlace
 import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.data.profile.ProfileStore
+import com.nova.rider.data.settings.SettingsStore
 import com.nova.rider.feature.common.TabPage
 import com.nova.rider.navigation.DriverCancelled
 import com.nova.rider.navigation.EditProfile
@@ -97,7 +103,6 @@ import com.nova.rider.navigation.Notifications
 import com.nova.rider.navigation.Offers
 import com.nova.rider.navigation.Offline
 import com.nova.rider.navigation.PaymentFailed
-import com.nova.rider.navigation.PinMap
 import com.nova.rider.navigation.Route
 import com.nova.rider.navigation.Safety
 import com.nova.rider.navigation.SavedPlaces
@@ -120,21 +125,35 @@ fun AccountScreen(nav: Navigator) {
     val riderName = listOfNotNull(
         user?.firstName?.ifBlank { null },
         user?.lastName?.ifBlank { null },
-    ).joinToString(" ").ifBlank { Sample.riderName }
-    val riderPhone = user?.phone ?: Sample.riderPhone
+    ).joinToString(" ").ifBlank { "Nova rider" }
+    // Whichever contact the rider signed up with (phone, email or both).
+    val riderContact = user?.phone ?: user?.email ?: ""
     val riderInitials = listOfNotNull(
         user?.firstName?.firstOrNull()?.uppercaseChar(),
         user?.lastName?.firstOrNull()?.uppercaseChar(),
-    ).joinToString("").ifBlank { Sample.riderInitials }
+    ).joinToString("").ifBlank { "?" }
+    // Rider ratings arrive with drivers (they rate riders after a trip); until then the badge says
+    // how long they've been with Nova instead of showing a made-up rating.
+    val memberSince = user?.createdAt?.let { iso ->
+        runCatching {
+            java.time.Instant.parse(iso).atZone(java.time.ZoneId.systemDefault())
+                .format(java.time.format.DateTimeFormatter.ofPattern("MMM yyyy"))
+        }.getOrNull()
+    }
+
+    LaunchedEffect(Unit) { SettingsStore.loadNotifications() }
 
     TabPage("", RiderTab.Account, nav::tab) {
         Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 80.dp, shape = NovaShape.Sunny)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(riderName, style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 30.sp))
-                Text(riderPhone, fontSize = 14.sp, color = c.onSurfaceVariant)
-                Box(Modifier.height(28.dp).clip(CircleShape).background(c.secondaryContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
-                    Text("★ ${Sample.riderRating} rider rating", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.onSecondaryContainer)
+                // Long names wrap to a second line, then end with an ellipsis; the edit button keeps its place.
+                Text(riderName, style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp), maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                if (riderContact.isNotBlank()) Text(riderContact, fontSize = 14.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                memberSince?.let {
+                    Box(Modifier.height(28.dp).clip(CircleShape).background(c.secondaryContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                        Text("Rider since $it", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.onSecondaryContainer)
+                    }
                 }
             }
             Surface(onClick = { nav.go(EditProfile) }, shape = RoundedCornerShape(16.dp), color = c.surfaceContainerHigh, modifier = Modifier.size(48.dp)) {
@@ -147,8 +166,12 @@ fun AccountScreen(nav: Navigator) {
             QuickTile("Offers", NovaIcons.Gift, NovaPalette.Mint, NovaPalette.OnMint) { nav.go(Offers) }
         }
         SegmentedColumn {
-            NovaListItem(0, 4, "Notifications", leading = { Icon(NovaIcons.Bell, null) }, onClick = { nav.go(Notifications) })
-            NovaListItem(1, 4, "Language", leading = { Icon(NovaIcons.Globe, null) }, trailing = { Text("English (NZ)", fontSize = 14.sp, color = c.onSurfaceVariant) }, onClick = { nav.go(Settings) })
+            NovaListItem(
+                0, 4, "Notifications", leading = { Icon(NovaIcons.Bell, null) },
+                trailing = if (SettingsStore.unread > 0) { { androidx.compose.material3.Badge { Text("${SettingsStore.unread}") } } } else null,
+                onClick = { nav.go(Notifications) },
+            )
+            NovaListItem(1, 4, "Settings", leading = { Icon(NovaIcons.Sliders, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(Settings) })
             SwitchRow(2, 4, NovaIcons.Moon, "Dark theme", null, dark) { dark = it }
             NovaListItem(3, 4, "Help & support", leading = { Icon(NovaIcons.Help, null) }, onClick = { nav.go(Help) })
         }
@@ -204,16 +227,7 @@ fun AccountScreen(nav: Navigator) {
             Text(it, style = MaterialTheme.typography.bodyMedium, color = c.primary, modifier = Modifier.padding(horizontal = 4.dp))
         }
         TextButton(
-            onClick = {
-                val refreshToken = AuthStore.session?.refreshToken
-                scope.launch {
-                    if (!refreshToken.isNullOrBlank()) {
-                        runCatching { NovaApi.logout(refreshToken) }
-                    }
-                    AuthStore.clearSession()
-                    nav.reset(Welcome)
-                }
-            },
+            onClick = { scope.launch { signOut(); nav.reset(Welcome) } },
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
             Text("Log out", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.error)
@@ -240,10 +254,27 @@ fun SubPage(
     bottom: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    // On medium/expanded windows the page becomes a centred column of readable width (Material
+    // adaptive guidance); on phones the max width is wider than the screen, so nothing changes.
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).imePadding()) {
         NovaTopBar(onBack = onBack, title = title, actions = actions)
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
-        if (bottom != null) Column(Modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = bottom)
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .then(if (bottom == null) Modifier.navigationBarsPadding() else Modifier),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                Modifier.widthIn(max = com.nova.rider.feature.common.ReadableContentWidth).fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp), content = content,
+            )
+        }
+        if (bottom != null) Column(Modifier.fillMaxWidth().navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.widthIn(max = com.nova.rider.feature.common.ReadableContentWidth).fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp), content = bottom,
+            )
+        }
     }
 }
 
@@ -262,7 +293,7 @@ fun EditProfileScreen(nav: Navigator) {
     val riderInitials = listOfNotNull(
         firstName.trim().firstOrNull()?.uppercaseChar(),
         lastName.trim().firstOrNull()?.uppercaseChar(),
-    ).joinToString("").ifBlank { Sample.riderInitials }
+    ).joinToString("").ifBlank { "?" }
     val primaryContact = ProfileStore.contacts.firstOrNull()
     val contactSummary = primaryContact?.let { "${it.name} · ${it.phone}" } ?: "Add a trusted contact"
 
@@ -293,11 +324,9 @@ fun EditProfileScreen(nav: Navigator) {
         },
     ) {
         Box(Modifier.align(Alignment.CenterHorizontally).padding(bottom = 6.dp).size(120.dp)) {
+            // Initials avatar. The "change photo" button returns with photo storage (profile photos
+            // need an image bucket and moderation); a button that does nothing is worse than none.
             CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 120.dp, shape = NovaShape.Sunny)
-            Surface(
-                onClick = {}, shape = RoundedCornerShape(14.dp), color = c.primary, contentColor = Color.White,
-                border = BorderStroke(3.dp, c.surface), modifier = Modifier.align(Alignment.BottomEnd).offset(y = (-4).dp).size(44.dp),
-            ) { Box(contentAlignment = Alignment.Center) { Icon(NovaIcons.Camera, "Change photo", Modifier.size(20.dp)) } }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             NovaTextField(
@@ -378,7 +407,7 @@ private fun VerifyContactSheet(
                 value = destination,
                 onValueChange = { destination = it },
                 label = if (isEmail) "Email address" else "Mobile (+country code)",
-                placeholder = if (isEmail) "you@example.com" else "+64 21 555 0142",
+                placeholder = if (isEmail) "you@example.com" else exampleInternationalMobile(),
                 keyboardOptions = KeyboardOptions(keyboardType = if (isEmail) KeyboardType.Email else KeyboardType.Phone),
             )
             if (codeSent) {
@@ -758,24 +787,40 @@ fun Modifier.dashedBorder(color: Color, radius: androidx.compose.ui.unit.Dp = 16
     )
 }
 
-private data class Notice(val title: String, val body: String, val time: String, val icon: ImageVector, val kind: Int, val today: Boolean)
+/** Icon and colour for each server event; unknown events get a neutral bell. */
+@Composable
+private fun noticeStyle(n: com.nova.rider.data.auth.AppNotification): Triple<ImageVector, Color, Color> {
+    val c = MaterialTheme.colorScheme
+    return when (n.event) {
+        "ride_scheduled" -> Triple(NovaIcons.Calendar, c.tertiaryContainer, c.onTertiaryContainer)
+        "ride_cancelled" -> Triple(NovaIcons.Close, c.surfaceContainerHigh, c.onSurface)
+        "no_drivers" -> Triple(NovaIcons.Car, c.secondaryContainer, c.onSecondaryContainer)
+        "receipt" -> Triple(NovaIcons.ReceiptFilled, c.primaryContainer, c.onPrimaryContainer)
+        else -> if (n.kind == "offer") Triple(NovaIcons.Tag, NovaPalette.Mint, NovaPalette.OnMint)
+        else Triple(NovaIcons.Bell, c.surfaceContainerHigh, c.onSurface)
+    }
+}
 
 @Composable
 fun NotificationsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
     var filter by rememberSaveable { mutableIntStateOf(0) }
-    var allRead by rememberSaveable { mutableStateOf(false) }
-    val all = listOf(
-        Notice("Your receipt is ready", "Comfort to Sylvia Park · ${Sample.fare}", "10:42 AM", NovaIcons.ReceiptFilled, 1, true),
-        Notice("${Sample.driverName} rated you 5 stars", "Thanks for being a great rider", "10:44 AM", NovaIcons.Star, 1, true),
-        Notice("Airport ride tomorrow", "Pickup 6:30 AM · driver assigned 15 min before", "Yesterday", NovaIcons.Calendar, 1, false),
-        Notice("Weekend offer unlocked", "20% off up to 2 rides this weekend", "Thu", NovaIcons.Tag, 2, false),
-        Notice("New: share trips automatically", "Turn on auto-share for late-night rides", "Mon", NovaIcons.Share, 0, false),
-    )
-    val colors = listOf(c.primaryContainer to c.onPrimaryContainer, c.tertiaryContainer to c.onTertiaryContainer, c.secondaryContainer to c.onSecondaryContainer, NovaPalette.Mint to NovaPalette.OnMint, c.surfaceContainerHigh to c.onSurface)
-    val shown = all.withIndex().filter { filter == 0 || it.value.kind == filter }
+    var loading by remember { mutableStateOf(SettingsStore.notifications.isEmpty()) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        failed = !SettingsStore.loadNotifications()
+        loading = false
+    }
+    val zone = remember { java.time.ZoneId.systemDefault() }
+    val today = remember { java.time.LocalDate.now(zone) }
+    val kinds = listOf(null, "trip", "offer")
+    val shown = SettingsStore.notifications.filter { kinds[filter] == null || it.kind == kinds[filter] }
+    fun localTime(iso: String) = runCatching { java.time.Instant.parse(iso).atZone(zone) }.getOrNull()
     SubPage("Notifications", onBack = { nav.back() }, actions = {
-        TextButton(onClick = { allRead = true }, enabled = !allRead) { Text("Mark all read", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold) }
+        TextButton(onClick = { scope.launch { SettingsStore.markAllRead() } }, enabled = SettingsStore.unread > 0) {
+            Text("Mark all read", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+        }
     }) {
         Row(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("All", "Trips", "Offers").forEachIndexed { i, label ->
@@ -785,23 +830,46 @@ fun NotificationsScreen(nav: Navigator) {
                     label = { Text(label, fontSize = 14.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.SemiBold) },
                     leadingIcon = if (on) { { Icon(NovaIcons.Check, null, Modifier.size(FilterChipDefaults.IconSize)) } } else null,
                     shape = if (on) CircleShape else RoundedCornerShape(12.dp),
-                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.primary, selectedLabelColor = Color.White, selectedLeadingIconColor = Color.White),
+                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.primary, selectedLabelColor = c.onPrimary, selectedLeadingIconColor = c.onPrimary),
                     modifier = Modifier.height(40.dp),
                 )
             }
         }
-        listOf(true to "Today", false to "Earlier").forEach { (today, label) ->
-            val group = shown.filter { it.value.today == today }
-            if (group.isNotEmpty()) {
-                Text(label, style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
-                SegmentedColumn {
-                    group.forEachIndexed { i, (orig, n) ->
-                        val (bg, fg) = colors[orig]
-                        NovaListItem(
-                            i, group.size, n.title, supporting = n.body + "\n" + n.time,
-                            leading = { IconTile(n.icon, bg, fg, size = 44.dp, radius = 16.dp) },
-                            trailing = if (n.today && !allRead) { { Box(Modifier.size(10.dp).clip(CircleShape).background(c.primary)) } } else null,
-                        )
+        when {
+            loading -> Box(Modifier.fillMaxWidth().padding(top = 48.dp), contentAlignment = Alignment.Center) { androidx.compose.material3.LoadingIndicator() }
+            failed && shown.isEmpty() -> Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Couldn't load notifications.", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                com.nova.designsystem.components.NovaOutlinedButton("Try again", onClick = {
+                    scope.launch { loading = true; failed = !SettingsStore.loadNotifications(); loading = false }
+                })
+            }
+            shown.isEmpty() -> Column(Modifier.fillMaxWidth().padding(top = 32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ShapeBadge(NovaShape.Cookie, 96.dp, c.primaryContainer) { Icon(NovaIcons.Bell, null, tint = c.onPrimaryContainer, modifier = Modifier.size(40.dp)) }
+                Text("You're all caught up", style = MaterialTheme.typography.titleLarge)
+                Text("Ride updates and offers will show up here.", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+            }
+            else -> listOf(true to "Today", false to "Earlier").forEach { (isToday, label) ->
+                val group = shown.filter { (localTime(it.createdAt)?.toLocalDate() == today) == isToday }
+                if (group.isNotEmpty()) {
+                    Text(label, style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+                    SegmentedColumn {
+                        group.forEachIndexed { i, n ->
+                            val (icon, bg, fg) = noticeStyle(n)
+                            val t = localTime(n.createdAt)
+                            val time = when {
+                                t == null -> ""
+                                isToday -> t.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))
+                                t.toLocalDate() == today.minusDays(1) -> "Yesterday"
+                                else -> t.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM"))
+                            }
+                            NovaListItem(
+                                i, group.size, n.title, supporting = listOf(n.body, time).filter { it.isNotBlank() }.joinToString("\n"),
+                                leading = { IconTile(icon, bg, fg, size = 44.dp, radius = 16.dp) },
+                                trailing = if (n.readAt == null) { { Box(Modifier.size(10.dp).clip(CircleShape).background(c.primary).semantics { contentDescription = "Unread" }) } } else null,
+                                // Trip notifications open Activity, where the ride is listed.
+                                onClick = if (n.rideId != null) ({ nav.tab(RiderTab.Activity) }) else null,
+                            )
+                        }
                     }
                 }
             }
@@ -887,39 +955,88 @@ private fun androidx.compose.foundation.layout.RowScope.OfferTile(title: String,
 fun SettingsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var dark by rememberSaveable { mutableStateOf(false) }
-    var wav by rememberSaveable { mutableStateOf(false) }
-    var quiet by rememberSaveable { mutableStateOf(true) }
-    var tripLocation by rememberSaveable { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var confirmDelete by rememberSaveable { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var exporting by remember { mutableStateOf(false) }
+    val ride = SettingsStore.ride
+    LaunchedEffect(Unit) { SettingsStore.loadRide() }
+
+    fun saveRide(next: com.nova.rider.data.auth.RiderSettings) {
+        scope.launch { if (!SettingsStore.updateRide(next)) message = "Couldn't save that. Check your connection and try again." }
+    }
+
+    // "Download my data": the rider picks where to save (Storage Access Framework, no storage
+    // permission needed), then we fetch the export and write it there.
+    val saveExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            exporting = true
+            message = try {
+                val text = NovaApi.exportMyData()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                }
+                "Your data was saved."
+            } catch (e: Throwable) {
+                authErrorMessage(e)
+            } finally {
+                exporting = false
+            }
+        }
+    }
+
     SubPage("Settings", onBack = { nav.back() }) {
         Group("Preferences")
         SegmentedColumn {
             SwitchRow(0, 2, NovaIcons.Moon, "Dark theme", "Follow system when off", dark) { dark = it }
-            NovaListItem(1, 2, "Language", supporting = "English (NZ)", leading = { Icon(NovaIcons.Globe, null, tint = c.onSurfaceVariant) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = {})
+            // English is the only language shipped; the row says so instead of opening an empty picker.
+            NovaListItem(1, 2, "Language", supporting = "English", leading = { Icon(NovaIcons.Globe, null, tint = c.onSurfaceVariant) })
         }
         Group("Ride needs")
         SegmentedColumn {
-            SwitchRow(0, 2, NovaIcons.Access, "Wheelchair-accessible vehicles", "Only match me with WAV cars", wav) { wav = it }
-            SwitchRow(1, 2, NovaIcons.Volume, "Quiet ride", "Let drivers know you prefer silence", quiet) { quiet = it }
+            SwitchRow(0, 2, NovaIcons.Access, "Wheelchair-accessible vehicles", "Only match me with WAV cars", ride.wheelchairAccess) {
+                saveRide(ride.copy(wheelchairAccess = it))
+            }
+            SwitchRow(1, 2, NovaIcons.Volume, "Quiet ride", "Let drivers know you prefer silence", ride.quietRide) {
+                saveRide(ride.copy(quietRide = it))
+            }
         }
         Group("Privacy")
         SegmentedColumn {
-            SwitchRow(0, 2, NovaIcons.Pin, "Location only during trips", "Stops background location after drop-off", tripLocation) { tripLocation = it }
-            NovaListItem(1, 2, "Download my data", supporting = "Under the NZ Privacy Act 2020", leading = { Icon(NovaIcons.Download, null, tint = c.onSurfaceVariant) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = {})
+            SwitchRow(0, 2, NovaIcons.Pin, "Location only during trips", "Stops background location after drop-off", ride.tripLocationOnly) {
+                saveRide(ride.copy(tripLocationOnly = it))
+            }
+            NovaListItem(
+                1, 2, "Download my data",
+                supporting = if (exporting) "Preparing your file…" else "A copy of everything Nova holds about you",
+                leading = { Icon(NovaIcons.Download, null, tint = c.onSurfaceVariant) },
+                trailing = { if (exporting) androidx.compose.material3.LoadingIndicator(Modifier.size(24.dp)) else Icon(NovaIcons.Chev, null) },
+                onClick = { if (!exporting) saveExport.launch("nova-my-data-${java.time.LocalDate.now()}.json") },
+            )
         }
-        Group("Design preview · edge cases")
-        val edges: List<Pair<String, Route>> = listOf(
-            "No drivers nearby" to NoDrivers, "Surge pricing" to Surge, "Driver cancelled" to DriverCancelled,
-            "Payment failed" to PaymentFailed, "No connection" to Offline, "Location off" to LocationDenied,
-            "Outside service area" to NoService, "No trips yet" to EmptyActivity, "SOS active" to SosActive,
-        )
-        SegmentedColumn {
-            edges.forEachIndexed { i, (label, route) ->
-                NovaListItem(i, edges.size, label, leading = { Icon(NovaIcons.Warning, null, tint = c.onSurfaceVariant) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(route) })
+        message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.primary, modifier = Modifier.padding(horizontal = 4.dp)) }
+        // Design-preview shortcuts to edge-case screens: debug builds only, never shipped to riders.
+        if (com.nova.rider.BuildConfig.DEBUG) {
+            Group("Design preview · edge cases")
+            val edges: List<Pair<String, Route>> = listOf(
+                "No drivers nearby" to NoDrivers, "Surge pricing" to Surge, "Driver cancelled" to DriverCancelled,
+                "Payment failed" to PaymentFailed, "No connection" to Offline, "Location off" to LocationDenied,
+                "Outside service area" to NoService, "No trips yet" to EmptyActivity, "SOS active" to SosActive,
+            )
+            SegmentedColumn {
+                edges.forEachIndexed { i, (label, route) ->
+                    NovaListItem(i, edges.size, label, leading = { Icon(NovaIcons.Warning, null, tint = c.onSurfaceVariant) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(route) })
+                }
             }
         }
         Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            com.nova.designsystem.components.NovaOutlinedButton("Log out", onClick = { nav.reset(Welcome) }, modifier = Modifier.weight(1f), height = 52.dp, leadingIcon = NovaIcons.Logout)
+            com.nova.designsystem.components.NovaOutlinedButton(
+                "Log out", onClick = { scope.launch { signOut(); nav.reset(Welcome) } },
+                modifier = Modifier.weight(1f), height = 52.dp, leadingIcon = NovaIcons.Logout,
+            )
             com.nova.designsystem.components.NovaTonalButton(
                 "Delete account", onClick = { confirmDelete = true }, modifier = Modifier.weight(1f), height = 52.dp, leadingIcon = NovaIcons.Trash,
                 containerColor = c.errorContainer, contentColor = c.onErrorContainer,
@@ -927,15 +1044,38 @@ fun SettingsScreen(nav: Navigator) {
         }
     }
     if (confirmDelete) {
-        BasicAlertDialog(onDismissRequest = { confirmDelete = false }) {
+        BasicAlertDialog(onDismissRequest = { if (!deleting) confirmDelete = false }) {
             Surface(shape = RoundedCornerShape(28.dp), color = c.surfaceContainerHigh) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     ShapeBadge(NovaShape.Cookie, 56.dp, c.errorContainer) { Icon(NovaIcons.Trash, null, tint = c.onErrorContainer) }
                     Text("Delete your account?", style = MaterialTheme.typography.headlineSmall)
-                    Text("Your trips, receipts and Nova Credit ($42.00) will be removed after 30 days. You can log back in before then to cancel.", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
+                    Text(
+                        "You'll be signed out on every device and scheduled rides will be cancelled. Your trips, saved places and contacts are removed after 30 days. Sign back in before then to keep your account.",
+                        style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant,
+                    )
                     Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { confirmDelete = false }) { Text("Keep account") }
-                        TextButton(onClick = { confirmDelete = false; nav.reset(Welcome) }) { Text("Delete", color = c.error) }
+                        TextButton(onClick = { confirmDelete = false }, enabled = !deleting) { Text("Keep account") }
+                        TextButton(
+                            enabled = !deleting,
+                            onClick = {
+                                scope.launch {
+                                    deleting = true
+                                    try {
+                                        NovaApi.requestAccountDeletion()
+                                        // Every session is already revoked server side; just forget this one.
+                                        AuthStore.clearSession()
+                                        nav.reset(Welcome)
+                                    } catch (e: Throwable) {
+                                        confirmDelete = false
+                                        message = if ((e as? com.nova.rider.data.auth.ApiException)?.code == "ride_in_progress")
+                                            "Finish or cancel your current ride before deleting your account."
+                                        else authErrorMessage(e)
+                                    } finally {
+                                        deleting = false
+                                    }
+                                }
+                            },
+                        ) { Text(if (deleting) "Deleting…" else "Delete", color = c.error) }
                     }
                 }
             }
@@ -943,7 +1083,23 @@ fun SettingsScreen(nav: Navigator) {
     }
 }
 
+/** Revokes this device's refresh token on the server, then forgets the session locally. */
+suspend fun signOut() {
+    AuthStore.session?.refreshToken?.takeIf { it.isNotBlank() }?.let { token -> runCatching { NovaApi.logout(token) } }
+    AuthStore.clearSession()
+}
+
 @Composable
 private fun Group(text: String) {
     Text(text, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+}
+
+/** "+64 21 234 5678" style example for the phone's own country (SIM, network or locale). */
+@Composable
+internal fun exampleInternationalMobile(): String {
+    val context = LocalContext.current
+    return remember(context) {
+        com.nova.rider.data.auth.detectCountry(context)?.let { com.nova.rider.data.auth.PhoneRegions.exampleMobile(it.iso, international = true) }
+            ?: "+ country code and number"
+    }
 }

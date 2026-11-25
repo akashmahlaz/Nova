@@ -246,7 +246,12 @@ fun RouteInputs(state: RoutePlannerState, modifier: Modifier = Modifier) {
                 active = state.editing == field,
                 value = if (state.editing == field) state.text else TextFieldValue(state.displayName(field)),
                 placeholder = when (field) {
-                    RouteField.Pickup -> if (TripStore.pickupIsCurrentLocation && TripStore.currentLocation != null) "Finding your location…" else "Pickup location"
+                    RouteField.Pickup -> when {
+                        TripStore.passenger != null && !TripStore.pickupIsCurrentLocation ->
+                            "Where should we pick up ${TripStore.passenger!!.name.substringBefore(' ')}?"
+                        TripStore.pickupIsCurrentLocation && TripStore.currentLocation != null -> "Finding your location…"
+                        else -> "Pickup location"
+                    }
                     is RouteField.Stop -> "Add stop ${field.index + 1}"
                     RouteField.Dropoff -> "Where to?"
                 },

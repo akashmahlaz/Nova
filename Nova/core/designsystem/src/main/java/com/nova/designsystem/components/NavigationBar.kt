@@ -41,3 +41,28 @@ fun RiderNavigationBar(selected: RiderTab, onSelect: (RiderTab) -> Unit, modifie
         }
     }
 }
+
+/**
+ * The same four destinations as [RiderNavigationBar], as an M3 Expressive collapsed rail for
+ * medium and expanded windows (Material: bar on compact, rail from 600 dp). Items are centred
+ * vertically so they sit within thumb reach on a tablet held in landscape.
+ */
+@Composable
+fun RiderNavigationRail(selected: RiderTab, onSelect: (RiderTab) -> Unit, modifier: Modifier = Modifier) {
+    androidx.compose.material3.WideNavigationRail(
+        modifier = modifier,
+        colors = androidx.compose.material3.WideNavigationRailDefaults.colors(containerColor = NovaTheme.colors.navBar),
+        arrangement = androidx.compose.foundation.layout.Arrangement.Center,
+    ) {
+        RiderTab.entries.forEach { tab ->
+            val isSelected = tab == selected
+            androidx.compose.material3.WideNavigationRailItem(
+                selected = isSelected,
+                onClick = { onSelect(tab) },
+                icon = { Icon(if (isSelected) tab.selectedIcon else tab.icon, contentDescription = null) },
+                label = { Text(tab.label) },
+                railExpanded = false,
+            )
+        }
+    }
+}

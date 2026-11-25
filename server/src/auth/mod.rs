@@ -473,6 +473,12 @@ pub(crate) async fn issue_session(st: &AppState, user: &User) -> Result<SessionR
         .bind(Utc::now() + Duration::days(REFRESH_TTL_DAYS))
         .execute(&st.pool)
         .await?;
+    // Signing in again within the 30-day grace period cancels a pending account deletion
+    // (deletion revokes every refresh token, so only a fresh OTP/passkey sign-in gets here).
+    sqlx::query("UPDATE users SET deletion_requested_at = NULL WHERE id = $1 AND deletion_requested_at IS NOT NULL")
+        .bind(user.id)
+        .execute(&st.pool)
+        .await?;
     Ok(SessionRes {
         access_token,
         refresh_token,

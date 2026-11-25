@@ -23,7 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/me", patch(update_me))
         .route("/v1/me/verify-contact", post(verify_contact))
         .route("/v1/places", get(list_places).post(upsert_place))
-        .route("/v1/places/{id}", delete(delete_place))
+        .route("/v1/places/{id}", delete(delete_place).patch(update_place))
         .route("/v1/emergency-contacts", get(list_contacts).post(create_contact))
         .route("/v1/emergency-contacts/{id}", delete(delete_contact))
 }
@@ -211,6 +211,55 @@ async fn upsert_place(
     };
 
     Ok((StatusCode::CREATED, Json(row)))
+}
+
+#[derive(Deserialize, Validate)]
+pub struct UpdatePlaceReq {
+    #[garde(length(min = 1, max = 60))]
+    label: String,
+    #[garde(length(min = 2, max = 200))]
+    address: String,
+    #[garde(skip)]
+    lat: Option<f64>,
+    #[garde(skip)]
+    lng: Option<f64>,
+}
+
+/// Edit a saved place in place (label, address, coordinates). The kind (home/work/custom) is
+/// fixed: switching kinds is delete + create, which keeps the one-home/one-work rule simple.
+async fn update_place(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdatePlaceReq>,
+) -> Result<Json<SavedPlace>, ApiError> {
+    let user_id = require_user_id(&st, &headers)?;
+    req.validate().map_err(validation_error)?;
+    let label = req.label.trim().to_string();
+    let address = req.address.trim().to_string();
+    if label.is_empty() || address.is_empty() {
+        return Err(ApiError::BadRequest("invalid_request"));
+    }
+    let valid = |v: Option<f64>, lim: f64| v.is_none_or(|x| x.is_finite() && x.abs() <= lim);
+    if !valid(req.lat, 90.0) || !valid(req.lng, 180.0) {
+        return Err(ApiError::BadRequest("invalid_location"));
+    }
+    sqlx::query_as::<_, SavedPlace>(
+        "UPDATE saved_places
+         SET label = $1, address = $2, lat = $3, lng = $4, updated_at = now()
+         WHERE id = $5 AND user_id = $6
+         RETURNING id, kind, label, address, lat, lng, updated_at",
+    )
+    .bind(&label)
+    .bind(&address)
+    .bind(req.lat)
+    .bind(req.lng)
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&st.pool)
+    .await?
+    .map(Json)
+    .ok_or(ApiError::NotFound("place_not_found"))
 }
 
 async fn delete_place(

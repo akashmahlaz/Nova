@@ -30,6 +30,28 @@ data class User(
     val role: String = "rider",
     @SerialName("phone_verified_at") val phoneVerifiedAt: String? = null,
     @SerialName("email_verified_at") val emailVerifiedAt: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+/** Ride preferences stored on the server (dispatch and drivers use them). */
+@Serializable
+data class RiderSettings(
+    @SerialName("wheelchair_access") val wheelchairAccess: Boolean = false,
+    @SerialName("quiet_ride") val quietRide: Boolean = false,
+    @SerialName("trip_location_only") val tripLocationOnly: Boolean = true,
+)
+
+/** One inbox entry. [kind] is trip / offer / account; [event] says what happened (icon choice). */
+@Serializable
+data class AppNotification(
+    val id: String,
+    val kind: String,
+    val event: String,
+    val title: String,
+    val body: String = "",
+    @SerialName("ride_id") val rideId: String? = null,
+    @SerialName("read_at") val readAt: String? = null,
+    @SerialName("created_at") val createdAt: String,
 )
 
 @Serializable
@@ -365,6 +387,41 @@ object NovaApi {
         json.decodeFromJsonElement(RideQuote.serializer(), requestAuth("POST", "/v1/rides/quote", body))
     }
 
+    // ---------- account ----------
+
+    suspend fun riderSettings(): RiderSettings = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(RiderSettings.serializer(), requestAuth("GET", "/v1/me/settings", null))
+    }
+
+    suspend fun saveRiderSettings(settings: RiderSettings): RiderSettings = withContext(Dispatchers.IO) {
+        val body = json.encodeToJsonElement(RiderSettings.serializer(), settings).jsonObject
+        json.decodeFromJsonElement(RiderSettings.serializer(), requestAuth("PUT", "/v1/me/settings", body))
+    }
+
+    /** Newest first, plus the unread count for the badge. */
+    suspend fun notifications(before: String? = null): Pair<List<AppNotification>, Int> = withContext(Dispatchers.IO) {
+        val query = before?.let { "?before=${encode(it)}" }.orEmpty()
+        val res = requestAuth("GET", "/v1/notifications$query", null)
+        json.decodeFromJsonElement(ListSerializer(AppNotification.serializer()), res.getValue("notifications")) to
+            res.getValue("unread").jsonPrimitive.content.toInt()
+    }
+
+    suspend fun markAllNotificationsRead() = withContext(Dispatchers.IO) {
+        requestAuthElement("POST", "/v1/notifications/read-all", null)
+        Unit
+    }
+
+    /** Everything the server holds about the rider, as pretty-printed JSON text. */
+    suspend fun exportMyData(): String = withContext(Dispatchers.IO) {
+        val doc = requestAuthElement("GET", "/v1/me/export", null)
+        Json { prettyPrint = true }.encodeToString(JsonElement.serializer(), doc)
+    }
+
+    /** Schedules account deletion; returns the ISO date after which it's permanent. */
+    suspend fun requestAccountDeletion(): String = withContext(Dispatchers.IO) {
+        requestAuth("POST", "/v1/me/delete", null).str("delete_after")
+    }
+
     // ---------- rides ----------
 
     /**
@@ -414,6 +471,12 @@ object NovaApi {
         }
         val res = requestAuth("GET", "/v1/rides$query", null)
         json.decodeFromJsonElement(ListSerializer(Ride.serializer()), res.getValue("rides"))
+    }
+
+    /** People this rider booked for before, most recent first. */
+    suspend fun recentPassengers(): List<Passenger> = withContext(Dispatchers.IO) {
+        val res = requestAuth("GET", "/v1/rides/passengers", null)
+        json.decodeFromJsonElement(ListSerializer(Passenger.serializer()), res.getValue("passengers"))
     }
 
     suspend fun cancelRide(id: String, reason: String? = null): Ride = withContext(Dispatchers.IO) {

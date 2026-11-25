@@ -25,9 +25,9 @@ import kotlinx.serialization.Serializable
 // Booking & trip
 @Serializable data object Home : Route
 @Serializable data object Search : Route
-@Serializable data object PinMap : Route
-@Serializable data object AddStop : Route
 @Serializable data object RideOptions : Route
+/** "Who's riding?" [then] = "search" (continue to the planner) or "back" (return). */
+@Serializable data class ChooseRider(val then: String) : Route
 @Serializable data object Schedule : Route
 @Serializable data object FindingDriver : Route
 @Serializable data object DriverEnRoute : Route

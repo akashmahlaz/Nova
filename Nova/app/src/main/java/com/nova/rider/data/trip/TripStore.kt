@@ -69,6 +69,38 @@ object TripStore {
     var quoteError: String? by mutableStateOf(null)
         private set
 
+    /** Wall-clock end of the current quote's price lock (ms). */
+    private var quoteValidUntil = 0L
+
+    /**
+     * Drops a quote whose server lock has (nearly) run out, so screens re-quote instead of
+     * showing an old price. Call before showing or booking a price.
+     */
+    fun dropExpiredQuote() {
+        if (quote != null && System.currentTimeMillis() >= quoteValidUntil) invalidateQuote()
+    }
+
+    /**
+     * Back to a fresh plan (Home is the start of every trip): destination, stops, price, rider and
+     * ride type are cleared, and the pickup follows the phone again. Kept: the rider's location,
+     * nearby places and a ride that is still in progress.
+     */
+    fun startNewPlan() {
+        if (ride?.isActive == true) return
+        stops = emptyList()
+        dropoff = null
+        if (!pickupIsCurrentLocation) {
+            pickup = null
+            pickupIsCurrentLocation = true
+        }
+        invalidateQuote()
+        productId = null
+        passenger = null
+        bookingMode = BookingMode.Now
+        bookError = null
+        ride = null
+    }
+
     /** Closest landmark places to the rider, nearest first (from Places Nearby Search). */
     var nearby: List<GeoPlace> by mutableStateOf(emptyList())
         private set
@@ -226,6 +258,8 @@ object TripStore {
         quoteError = null
         try {
             quote = NovaApi.quote(from.point, to.point, via.map { it.point })
+            // Keep 30 s of margin under the server's lock so a price is never shown after it expired.
+            quoteValidUntil = System.currentTimeMillis() + (quote!!.expiresIn - 30).coerceAtLeast(0) * 1000
         } catch (e: ApiException) {
             quote = null
             quoteError = e.code
@@ -252,8 +286,27 @@ object TripStore {
     /** "gpay", "card" or "credit" (server values). */
     var paymentMethod: String by mutableStateOf("gpay")
 
-    /** Set when booking for someone else; null = the rider is riding. */
+    /** Set when booking for someone else; null = the rider is riding. Change it with [rideFor]. */
     var passenger: Passenger? by mutableStateOf(null)
+        private set
+
+    /**
+     * Who is riding (null = me). For someone else, a pickup that only followed this phone's
+     * location is cleared, because they are usually somewhere else: the planner then asks
+     * "Where should we pick up <name>?" ("Use current location" stays one tap away).
+     * Back to me with no pickup chosen: the pickup follows this phone again.
+     */
+    fun rideFor(who: Passenger?) {
+        passenger = who
+        bookingMode = if (who == null) BookingMode.Now else BookingMode.ForSomeone
+        if (who != null && pickupIsCurrentLocation) {
+            pickup = null
+            pickupIsCurrentLocation = false
+            invalidateQuote()
+        } else if (who == null && pickup == null) {
+            pickupIsCurrentLocation = true
+        }
+    }
 
     /** The booked ride being followed (Finding driver onwards). */
     var ride: Ride? by mutableStateOf(null)
@@ -293,8 +346,13 @@ object TripStore {
                         scheduledAt = scheduledAt,
                         passenger = passenger,
                     )
-                    // The quote is spent once booked; the next trip needs a fresh one.
+                    // The quote is spent once booked; the next trip needs a fresh one, and starts
+                    // as a normal "Now" ride for the rider (Uber resets "for someone" the same way).
                     invalidateQuote()
+                    if (scheduledAt == null) {
+                        bookingMode = BookingMode.Now
+                        passenger = null
+                    }
                     if (booked.isActive) ride = booked
                     return booked
                 } catch (e: ApiException) {

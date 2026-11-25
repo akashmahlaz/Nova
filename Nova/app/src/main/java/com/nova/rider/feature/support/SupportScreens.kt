@@ -249,7 +249,7 @@ private fun TrustedContactsSheet(onDismiss: () -> Unit) {
                 }
             }
             NovaTextField(name, { name = it }, "Contact name", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
-            NovaTextField(phone, { phone = it }, "Mobile (+country code)", placeholder = "+64 21 555 0142", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+            NovaTextField(phone, { phone = it }, "Mobile (+country code)", placeholder = com.nova.rider.feature.account.exampleInternationalMobile(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
             NovaTextField(relationship, { relationship = it }, "Relationship (optional)", placeholder = "Mum, Partner, Friend", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
             error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
             NovaButton(

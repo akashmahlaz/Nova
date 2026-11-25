@@ -16,7 +16,7 @@ fun tripErrorMessage(code: String?): String = when (code) {
     "ride_in_progress" -> "You already have a ride in progress."
     "schedule_too_soon" -> "Pick a time at least 15 minutes from now."
     "schedule_too_far" -> "You can schedule up to 30 days ahead."
-    "invalid_phone" -> "Enter the rider's number with the country code, like +64 21 555 0123."
+    "invalid_phone" -> "That mobile number isn't valid. Check the number and country code."
     "invalid_passenger_name" -> "Enter the rider's name."
     "ride_not_cancellable" -> "This ride can't be cancelled any more."
     else -> "Something went wrong. Try again."

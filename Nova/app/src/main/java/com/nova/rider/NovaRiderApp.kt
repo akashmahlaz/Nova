@@ -60,7 +60,11 @@ private fun EnsureLocalNetworkAccess() {
 @Composable
 fun NovaRiderApp() {
     val context = LocalContext.current
-    remember(context) { AuthStore.init(context) }
+    remember(context) {
+        AuthStore.init(context)
+        // After AuthStore: the saved-places cache is only read for a signed-in rider.
+        com.nova.rider.data.profile.ProfileStore.init(context)
+    }
     EnsureLocalNetworkAccess()
     val backStack = rememberNavBackStack(Splash)
     val nav = remember(backStack) { Navigator(backStack) }
@@ -101,8 +105,7 @@ fun NovaRiderApp() {
             entry<ProfileSetup> { ProfileSetupScreen(nav) }
             entry<Home> { HomeScreen(nav) }
             entry<Search> { SearchScreen(nav) }
-            entry<PinMap> { PinMapScreen(nav) }
-            entry<AddStop> { AddStopScreen(nav) }
+            entry<com.nova.rider.navigation.ChooseRider> { key -> com.nova.rider.feature.booking.ChooseRiderScreen(nav, key.then) }
             entry<RideOptions> { RideOptionsScreen(nav) }
             entry<Schedule> { ScheduleScreen(nav) }
             entry<FindingDriver> { FindingDriverScreen(nav) }

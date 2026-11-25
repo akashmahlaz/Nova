@@ -1,5 +1,7 @@
 package com.nova.rider.data.profile
 
+import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -9,18 +11,49 @@ import com.nova.rider.data.auth.NovaApi
 import com.nova.rider.data.auth.SavedPlace
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 /**
- * In-memory cache of the signed-in rider's PostgreSQL-backed saved places and emergency contacts.
- * Cleared automatically on logout via [AuthStore.clearSession].
+ * The signed-in rider's saved places and emergency contacts (stored in Postgres on the server).
+ *
+ * Saved places are also kept on the phone (stale-while-revalidate, as ride-hailing apps do), so
+ * Home and Work show the moment the app opens; the server copy then replaces them. The local copy
+ * lives in app-private storage, is excluded from backups, and is wiped on logout via
+ * [AuthStore.clearSession].
  */
 object ProfileStore {
-    var places: List<SavedPlace> by mutableStateOf(emptyList())
-        private set
+    private const val PREFS = "nova_profile"
+    private const val KEY_PLACES = "places"
+    private val json = Json { ignoreUnknownKeys = true }
+    private var prefs: SharedPreferences? = null
+
+    /** Loads the on-device copy of saved places. Call once at startup, after AuthStore.init. */
+    fun init(context: Context) {
+        if (prefs != null) return
+        val store = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs = store
+        if (AuthStore.session == null) return
+        store.getString(KEY_PLACES, null)?.let { cached ->
+            runCatching { json.decodeFromString(ListSerializer(SavedPlace.serializer()), cached) }
+                .onSuccess { placesState.value = it }
+        }
+    }
+
+    private val placesState = mutableStateOf<List<SavedPlace>>(emptyList())
+
+    /** Every change is mirrored to the on-device copy. */
+    var places: List<SavedPlace>
+        get() = placesState.value
+        private set(value) {
+            placesState.value = value
+            prefs?.edit()?.putString(KEY_PLACES, json.encodeToString(ListSerializer(SavedPlace.serializer()), value))?.apply()
+        }
 
     var contacts: List<EmergencyContact> by mutableStateOf(emptyList())
         private set
 
+    /** True once places have been fetched from the server in this app session. */
     var loaded: Boolean by mutableStateOf(false)
         private set
 
@@ -39,9 +72,10 @@ object ProfileStore {
         coroutineScope {
             val placesJob = async { runCatching { NovaApi.listPlaces() }.getOrNull() }
             val contactsJob = async { runCatching { NovaApi.listEmergencyContacts() }.getOrNull() }
-            placesJob.await()?.let { places = it }
+            // Only a successful fetch counts as loaded. A failed one (server down, token being
+            // renewed, no signal) keeps the cached places and is retried next time Home opens.
+            placesJob.await()?.let { places = it; loaded = true }
             contactsJob.await()?.let { contacts = it }
-            loaded = true
         }
     }
 
@@ -80,6 +114,7 @@ object ProfileStore {
 
     fun clear() {
         places = emptyList()
+        prefs?.edit()?.remove(KEY_PLACES)?.apply()
         contacts = emptyList()
         loaded = false
     }

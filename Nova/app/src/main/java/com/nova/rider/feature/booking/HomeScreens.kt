@@ -1,5 +1,10 @@
 package com.nova.rider.feature.booking
 
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.InputChipDefaults
+import androidx.compose.material3.InputChip
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import android.Manifest
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -127,9 +132,7 @@ import com.nova.rider.feature.common.MapFab
 import com.nova.rider.feature.common.RouteDot
 import com.nova.rider.feature.common.RouteLine
 import com.nova.rider.navigation.Account
-import com.nova.rider.navigation.AddStop
 import com.nova.rider.navigation.Navigator
-import com.nova.rider.navigation.PinMap
 import com.nova.rider.navigation.RideOptions
 import com.nova.rider.navigation.Schedule
 import com.nova.rider.navigation.Search
@@ -216,17 +219,19 @@ fun HomeScreen(nav: Navigator) {
             fallback = { userDot(196f, 252f, c.primary) },
         )
         LaunchedEffect(Unit) {
+            // Home starts every trip: an earlier, cancelled or abandoned plan doesn't carry over.
+            TripStore.startNewPlan()
             ProfileStore.refreshIfNeeded()
             // A request still open on the server (app was closed mid-booking): go back to following it.
             if (TripStore.loadActiveRide()?.status == "requested") nav.go(com.nova.rider.navigation.FindingDriver)
         }
 
         val user = AuthStore.session?.user
-        val riderName = user?.firstName?.ifBlank { null } ?: Sample.riderName
+        val riderName = user?.firstName?.trim()?.ifBlank { null }
         val riderInitials = listOfNotNull(
             user?.firstName?.firstOrNull()?.uppercaseChar(),
             user?.lastName?.firstOrNull()?.uppercaseChar(),
-        ).joinToString("").ifBlank { Sample.riderInitials }
+        ).joinToString("").ifBlank { user?.email?.take(1)?.uppercase().orEmpty() }
         val homePlace = ProfileStore.homePlace()
         val workPlace = ProfileStore.workPlace()
         val customPlaces = ProfileStore.customPlaces()
@@ -242,7 +247,11 @@ fun HomeScreen(nav: Navigator) {
             Row(Modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { nav.go(Account) }) { Icon(NovaIcons.Menu, "Open menu") }
                 Text("Search places, addresses", style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant, modifier = Modifier.weight(1f))
-                CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 40.dp)
+                // Avatar opens the account, like the menu button (the rest of the bar opens search).
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).clickable(onClickLabel = "Open account") { nav.go(Account) },
+                    contentAlignment = Alignment.Center,
+                ) { CookieAvatar(riderInitials, c.tertiaryContainer, c.onTertiaryContainer, size = 40.dp) }
             }
         }
         Column(Modifier.align(Alignment.BottomCenter).onSizeChanged { stackHeightPx = it.height }) {
@@ -254,9 +263,8 @@ fun HomeScreen(nav: Navigator) {
             ) {
                 MapSheet(contentPadding = androidx.compose.foundation.layout.PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Text(
-                            "Where to,\n$riderName?",
-                            style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp),
+                        GreetingTitle(
+                            firstName = riderName,
                             modifier = Modifier.onGloballyPositioned { titleBottomPx = it.positionInRoot().y + it.size.height },
                         )
                         NovaConnectedGroup(
@@ -265,8 +273,12 @@ fun HomeScreen(nav: Navigator) {
                             // rider plans the route as usual; Ride options finishes accordingly.
                             selectedIndex = TripStore.bookingMode.ordinal,
                             onSelect = {
-                                TripStore.bookingMode = TripStore.BookingMode.entries[it]
-                                if (it != 0) nav.go(Search)
+                                when (TripStore.BookingMode.entries[it]) {
+                                    TripStore.BookingMode.Now -> TripStore.rideFor(null)
+                                    TripStore.BookingMode.Schedule -> { TripStore.bookingMode = TripStore.BookingMode.Schedule; nav.go(Search) }
+                                    // Who's riding comes first, then the route (pickup asks for them).
+                                    TripStore.BookingMode.ForSomeone -> nav.go(com.nova.rider.navigation.ChooseRider(then = "search"))
+                                }
                             },
                             leadingIconForChecked = NovaIcons.Check,
                             weights = listOf(1f, 1f, 1.2f),
@@ -274,7 +286,7 @@ fun HomeScreen(nav: Navigator) {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             SavedPlaceCard(
                                 "Home",
-                                homePlace?.address ?: "Tap to set",
+                                homePlace?.let { shortAddress(it.address) } ?: "Add address",
                                 c.primaryContainer,
                                 c.onPrimaryContainer,
                                 Modifier.weight(1f),
@@ -285,7 +297,7 @@ fun HomeScreen(nav: Navigator) {
                             }
                             SavedPlaceCard(
                                 "Work",
-                                workPlace?.address ?: "Tap to set",
+                                workPlace?.let { shortAddress(it.address) } ?: "Add address",
                                 c.tertiaryContainer,
                                 c.onTertiaryContainer,
                                 Modifier.weight(1f),
@@ -306,14 +318,27 @@ fun HomeScreen(nav: Navigator) {
                                 )
                             } else {
                                 val shown = customPlaces.take(2)
+                                // More than two favourites: the last row opens the full list.
+                                val rows = shown.size + if (customPlaces.size > 2) 1 else 0
                                 shown.forEachIndexed { idx, place ->
                                     NovaListItem(
                                         idx,
-                                        shown.size,
+                                        rows,
                                         place.label,
-                                        supporting = place.address,
+                                        supporting = shortAddress(place.address),
                                         leading = { Icon(NovaIcons.Pin, null) },
                                         onClick = { nav.go(if (TripStore.chooseDropoff(place)) Search else com.nova.rider.navigation.SavedPlaces) },
+                                    )
+                                }
+                                if (customPlaces.size > 2) {
+                                    NovaListItem(
+                                        rows - 1,
+                                        rows,
+                                        "All saved places",
+                                        supporting = "${customPlaces.size} places",
+                                        leading = { Icon(NovaIcons.Pin, null) },
+                                        trailing = { Icon(NovaIcons.Chev, null) },
+                                        onClick = { nav.go(com.nova.rider.navigation.SavedPlaces) },
                                     )
                                 }
                             }
@@ -334,6 +359,40 @@ fun HomeScreen(nav: Navigator) {
     }
 }
 
+/**
+ * "Where to, Akash?" The name line shrinks (40 sp down to 28 sp) to fit one line, and a name too
+ * long even then is cut with an ellipsis while the "?" stays. No name yet: just "Where to?".
+ */
+@Composable
+private fun GreetingTitle(firstName: String?, modifier: Modifier = Modifier) {
+    val style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp, color = MaterialTheme.colorScheme.onSurface)
+    Column(modifier.semantics(mergeDescendants = true) {}) {
+        if (firstName == null) {
+            Text("Where to?", style = style)
+            return@Column
+        }
+        Text("Where to,", style = style)
+        Row(verticalAlignment = Alignment.Bottom) {
+            androidx.compose.foundation.text.BasicText(
+                firstName,
+                modifier = Modifier.weight(1f, fill = false),
+                style = style,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(minFontSize = 28.sp, maxFontSize = 40.sp, stepSize = 2.sp),
+            )
+            Text("?", style = style)
+        }
+    }
+}
+
+/**
+ * The part of an address a rider recognises: "12 Queen Street" from
+ * "12 Queen Street, Auckland CBD, Auckland 1010, New Zealand".
+ */
+internal fun shortAddress(address: String): String =
+    address.substringBefore(',').trim().ifBlank { address.trim() }
+
 @Composable
 private fun SavedPlaceCard(
     title: String,
@@ -347,9 +406,10 @@ private fun SavedPlaceCard(
     Surface(onClick = onClick, modifier = modifier.height(72.dp), shape = RoundedCornerShape(24.dp), color = container, contentColor = content) {
         Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             icon()
-            Column {
-                Text(title, style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp))
-                Text(eta, style = MaterialTheme.typography.bodySmall)
+            // One line each, cut with an ellipsis: the card is a fixed 72 dp tall.
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(eta, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -370,6 +430,8 @@ fun SearchScreen(nav: Navigator) {
         // Open on the first empty field: destination, else an empty stop. A complete route opens on the map.
         val emptyStop = TripStore.stops.indexOfFirst { it == null }
         when {
+            // Booking for someone: ask where to pick them up before anything else.
+            TripStore.passenger != null && TripStore.pickup == null -> planner.startEditing(RouteField.Pickup)
             TripStore.dropoff == null -> planner.startEditing(RouteField.Dropoff)
             emptyStop >= 0 -> planner.startEditing(RouteField.Stop(emptyStop))
         }
@@ -396,6 +458,23 @@ fun SearchScreen(nav: Navigator) {
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // Who's riding, when it isn't the rider: tap to change, ✕ to ride yourself.
+            TripStore.passenger?.let { p ->
+                InputChip(
+                    selected = true,
+                    onClick = { nav.go(com.nova.rider.navigation.ChooseRider(then = "back")) },
+                    label = { Text("For ${p.name}", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingIcon = { Icon(NovaIcons.People, null, Modifier.size(InputChipDefaults.IconSize)) },
+                    trailingIcon = {
+                        Icon(
+                            NovaIcons.Close, "Ride myself",
+                            Modifier.size(InputChipDefaults.IconSize).clickable(onClickLabel = "Ride myself") { TripStore.rideFor(null) },
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.height(40.dp).widthIn(max = 220.dp),
+                )
+            }
             listOf("Home" to (NovaIcons.Home to ProfileStore.homePlace()), "Work" to (NovaIcons.Work to ProfileStore.workPlace())).forEach { (label, pair) ->
                 val (icon, saved) = pair
                 AssistChip(
@@ -442,6 +521,7 @@ private fun RoutePreview(modifier: Modifier, onContinue: () -> Unit) {
     val complete = TripStore.routeComplete
 
     LaunchedEffect(pickup, TripStore.stops, dropoff) {
+        TripStore.dropExpiredQuote()
         if (complete && TripStore.quote == null && !TripStore.quoting) TripStore.requestQuote()
     }
     val camera = rememberCameraPositionState {
@@ -489,189 +569,5 @@ private fun RoutePreview(modifier: Modifier, onContinue: () -> Unit) {
                 }
             }
         }
-    }
-}
-
-@Composable
-fun PinMapScreen(nav: Navigator) {
-    val c = MaterialTheme.colorScheme
-    var spot by rememberSaveable { mutableIntStateOf(0) }
-    val context = LocalContext.current
-    val density = LocalDensity.current
-    var sheetHeightPx by remember { mutableIntStateOf(0) }
-    val start = TripStore.pickup?.point ?: TripStore.currentLocation
-    val camera = rememberCameraPositionState {
-        position = start?.let { CameraPosition.fromLatLngZoom(it.toLatLng(), 17f) }
-            ?: CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 2f)
-    }
-    // The address under the pin. Starts as the current pickup so the sheet isn't empty.
-    var pinned by remember { mutableStateOf(TripStore.pickup) }
-    var resolving by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    // Reverse geocode only when the camera settles: dragging is free (Maps SDK on Android is
-    // unbilled) but each geocode is a paid call. Wait 400 ms after the map stops and skip moves
-    // under 15 m, so one adjustment costs one lookup instead of dozens.
-    LaunchedEffect(camera.isMoving) {
-        if (camera.isMoving) return@LaunchedEffect
-        delay(400)
-        val target = camera.position.target.toGeoPoint()
-        val last = pinned
-        if (last != null && metersBetween(last.point, target) < 15f) return@LaunchedEffect
-        resolving = true
-        error = null
-        runCatching { NovaApi.reverseGeocode(target) }
-            .onSuccess { pinned = it }
-            .onFailure { error = tripErrorMessage(it) }
-        resolving = false
-    }
-    val here = TripStore.currentLocation
-    val walk = pinned?.let { p -> here?.let { metersBetween(it, p.point) } }
-
-    Box(Modifier.fillMaxSize()) {
-        NovaMap(
-            cameraPositionState = camera,
-            showMyLocation = TripStore.hasLocationPermission(context),
-            contentPadding = PaddingValues(bottom = with(density) { sheetHeightPx.toDp() }),
-            fallback = { halo(195f, 420f, 60f, c.primary, 0.08f) },
-        )
-        Row(Modifier.statusBarsPadding().padding(start = 16.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            MapFab(NovaIcons.Back, "Back", onClick = { nav.back() })
-            Box(Modifier.height(44.dp).clip(CircleShape).background(c.onSurface).padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
-                Text("Drag the map to move the pin", color = Color.White, style = MaterialTheme.typography.labelMedium)
-            }
-        }
-        // Centre pin
-        Column(Modifier.align(Alignment.Center).offset(y = (-90).dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(shape = RoundedCornerShape(16.dp), color = Color.White, shadowElevation = 6.dp) {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Pickup here", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
-                    // Real distance from the rider's fix (walking ETA needs a walking route: later).
-                    walk?.let {
-                        Text(
-                            if (it < 20f) "You're here" else "${TripFormat.distance(it.toLong())} from you",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = c.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            ShapeBadge(NovaShape.Burst, 40.dp, c.primary)
-            Box(Modifier.width(3.dp).height(24.dp).background(c.onSurface))
-            Box(Modifier.width(12.dp).height(5.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.25f)))
-        }
-        MapSheet(Modifier.align(Alignment.BottomCenter).onSizeChanged { sheetHeightPx = it.height }) {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.navigationBarsPadding()) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    IconTile(NovaIcons.Pin, c.primaryContainer, c.onPrimaryContainer, size = 48.dp, radius = 16.dp)
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            when {
-                                resolving -> "Finding address…"
-                                else -> pinned?.name ?: "Move the map to set pickup"
-                            },
-                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            error ?: pinned?.address?.substringAfter(", ", "").orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (error != null) c.error else c.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
-                    Surface(onClick = { nav.back() }, shape = CircleShape, color = c.surfaceContainerHighest, modifier = Modifier.height(40.dp)) {
-                        Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) { Text("Edit", style = MaterialTheme.typography.labelMedium) }
-                    }
-                }
-                SectionLabel("Suggested pickup spots")
-                NovaConnectedGroup(listOf("Front door", "Bus stop", "Corner café"), spot, { spot = it })
-                NovaButton(
-                    "Confirm pickup",
-                    enabled = pinned != null && !resolving,
-                    onClick = {
-                        pinned?.let(TripStore::choosePickup)
-                        // With a destination already chosen go straight to prices, otherwise back to search.
-                        if (TripStore.dropoff != null) nav.go(RideOptions) else nav.back()
-                    },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun AddStopScreen(nav: Navigator) {
-    val c = MaterialTheme.colorScheme
-    var hasStop by rememberSaveable { mutableStateOf(true) }
-    Column(Modifier.fillMaxSize().background(c.surface)) {
-        NovaTopBar(onBack = { nav.back() }, title = "Your route")
-        Column(Modifier.weight(1f).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Column(Modifier.width(20.dp).padding(top = 26.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    RouteDot(DotKind.Pickup); RouteLine(50.dp)
-                    if (hasStop) { RouteDot(DotKind.Stop); RouteLine(50.dp) }
-                    RouteDot(DotKind.Destination)
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    StopRow("Pickup", Sample.pickup, RoundedCornerShape(20.dp, 20.dp, 4.dp, 4.dp), c.surfaceContainerHigh, c.onSurface) {
-                        Icon(NovaIcons.Drag, "Reorder", tint = c.outline, modifier = Modifier.padding(end = 8.dp))
-                    }
-                    if (hasStop) {
-                        StopRow("Stop 1 · 3 min wait included", "Countdown Ponsonby", RoundedCornerShape(4.dp), c.tertiaryContainer, c.onTertiaryContainer) {
-                            IconButton(onClick = { hasStop = false }) { Icon(NovaIcons.Close, "Remove stop", Modifier.size(20.dp)) }
-                        }
-                    }
-                    StopRow("Drop-off", Sample.destination, RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp), c.primaryContainer, c.onPrimaryContainer) {
-                        Icon(NovaIcons.Drag, "Reorder", modifier = Modifier.padding(end = 8.dp))
-                    }
-                }
-            }
-            Surface(
-                onClick = { hasStop = true },
-                shape = RoundedCornerShape(16.dp),
-                border = BorderStroke(1.dp, c.outline),
-                color = Color.Transparent,
-                modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) {
-                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                    Icon(NovaIcons.Plus, null, Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Add another stop", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp))
-                    Text(" · ${if (hasStop) 1 else 2} of 2 left", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant)
-                }
-            }
-            Row(
-                Modifier.clip(RoundedCornerShape(20.dp)).background(c.secondaryContainer).padding(horizontal = 16.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(NovaIcons.Route, null, tint = c.onSecondaryContainer)
-                Text("Your driver will wait up to 3 minutes at each stop. Longer waits may add to the fare.", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = c.onSecondaryContainer)
-            }
-            Spacer(Modifier.weight(1f))
-            Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
-                Text("New fare · Comfort", style = MaterialTheme.typography.bodyMedium, color = c.onSurfaceVariant, modifier = Modifier.weight(1f))
-                Text(if (hasStop) "$32.60" else Sample.fare, style = MaterialTheme.typography.headlineSmall)
-                if (hasStop) Text(" +$4.20", style = MaterialTheme.typography.labelMedium, color = c.tertiary, modifier = Modifier.padding(bottom = 4.dp))
-            }
-            NovaButton("Update route", onClick = { nav.go(RideOptions) }, modifier = Modifier.navigationBarsPadding())
-        }
-    }
-}
-
-@Composable
-private fun StopRow(label: String, value: String, shape: RoundedCornerShape, container: Color, content: Color, trailing: @Composable () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().height(64.dp).clip(shape).background(container).padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Normal), color = content)
-            Text(value, style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp), color = content)
-        }
-        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides content) { trailing() }
     }
 }
