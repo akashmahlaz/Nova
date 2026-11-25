@@ -35,7 +35,21 @@ object NovaIcons {
     val Download: ImageVector by lazy { strokeIcon("Download", 2.2f, "M12 3v12m-5-5 5 5 5-5M5 21h14") }
     val Drag: ImageVector by lazy { strokeIcon("Drag", 3f, "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01") }
     val Edit: ImageVector by lazy { strokeIcon("Edit", 2.2f, "M4 20h4L19 9l-4-4L4 16z") }
-    val Finger: ImageVector by lazy { strokeIcon("Finger", 2.2f, "M12 11v3a6 6 0 0 0 1 3.3M8.5 7.5A5 5 0 0 1 17 11v2M7 11a5 5 0 0 1 .2-1.5M16 16.5c.3-1 .5-2 .5-3M4.5 15a9 9 0 0 1-.5-3 8 8 0 0 1 14-5.3M12 21a10 10 0 0 1-2.7-4.3M10 12c0 3 .6 5 2 7") }
+    val Finger: ImageVector by lazy {
+        strokeIcon(
+            "Finger",
+            2.0f,
+            "M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4",
+            "M14 13.12c0 2.38 0 6.38-1 8.88",
+            "M17.29 21.02c.12-.6.43-2.3.5-3.02",
+            "M2 12a10 10 0 0 1 18-6",
+            "M2 16h.01",
+            "M21.8 16c.2-2 .131-5.354 0-6",
+            "M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2",
+            "M8.65 22c.21-.66.45-1.32.57-2",
+            "M9 6.8a6 6 0 0 1 9 5.2v2",
+        )
+    }
     val Flag: ImageVector by lazy { strokeIcon("Flag", 2.2f, "M5 21V4h11l-2 4 2 4H5") }
     val Flash: ImageVector by lazy { strokeIcon("Flash", 2.2f, "M13 2 4 14h7l-1 8 9-12h-7z") }
     val Gift: ImageVector by lazy { strokeIcon("Gift", 2.2f, "M4 8h16a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1z", "M5 13v8h14v-8M12 8v13M12 8c-2-4-5-4-5-2s3 2 5 2c2 0 5 0 5-2s-3-2-5 2") }

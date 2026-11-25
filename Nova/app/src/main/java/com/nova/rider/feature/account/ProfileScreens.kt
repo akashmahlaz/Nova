@@ -172,19 +172,21 @@ fun AccountScreen(nav: Navigator) {
                 }
             },
             enabled = !passkeyBusy,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
             color = c.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+            modifier = Modifier.fillMaxWidth().height(64.dp),
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                if (passkeyBusy) {
-                    androidx.compose.material3.LoadingIndicator(Modifier.size(24.dp), color = c.primary)
-                } else {
-                    Icon(NovaIcons.Finger, null, modifier = Modifier.size(24.dp))
+                ShapeBadge(NovaShape.Cookie, 40.dp, c.primaryContainer) {
+                    if (passkeyBusy) {
+                        androidx.compose.material3.LoadingIndicator(Modifier.size(20.dp), color = c.onPrimaryContainer)
+                    } else {
+                        Icon(NovaIcons.Finger, null, tint = c.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                    }
                 }
                 Column(Modifier.weight(1f)) {
                     Text("Create a passkey", style = MaterialTheme.typography.labelLarge)

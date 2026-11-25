@@ -385,13 +385,15 @@ fun LoginScreen(nav: Navigator) {
                         shape = RoundedCornerShape(20.dp),
                         color = c.secondaryContainer,
                         contentColor = c.onSecondaryContainer,
-                        modifier = Modifier.fillMaxWidth().height(64.dp),
+                        modifier = Modifier.fillMaxWidth().height(68.dp),
                     ) {
-                        Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            if (passkeyBusy) {
-                                androidx.compose.material3.LoadingIndicator(Modifier.size(26.dp), color = c.onSecondaryContainer)
-                            } else {
-                                Icon(NovaIcons.Finger, null, modifier = Modifier.size(26.dp))
+                        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            ShapeBadge(NovaShape.Cookie, 42.dp, c.primaryContainer) {
+                                if (passkeyBusy) {
+                                    androidx.compose.material3.LoadingIndicator(Modifier.size(22.dp), color = c.onPrimaryContainer)
+                                } else {
+                                    Icon(NovaIcons.Finger, null, tint = c.onPrimaryContainer, modifier = Modifier.size(22.dp))
+                                }
                             }
                             Column(Modifier.weight(1f)) {
                                 Text("Use a passkey", style = MaterialTheme.typography.labelLarge)

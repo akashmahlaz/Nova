@@ -106,7 +106,12 @@ async fn main() {
         .route(
             "/.well-known/assetlinks.json",
             get(|| async {
-                let fingerprint = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT").unwrap_or_default();
+                let raw = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT").unwrap_or_default();
+                let fingerprints: Vec<&str> = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 let target = |pkg: &str| {
                     serde_json::json!({
                         "relation": [
@@ -116,7 +121,7 @@ async fn main() {
                         "target": {
                             "namespace": "android_app",
                             "package_name": pkg,
-                            "sha256_cert_fingerprints": [fingerprint]
+                            "sha256_cert_fingerprints": fingerprints
                         }
                     })
                 };
