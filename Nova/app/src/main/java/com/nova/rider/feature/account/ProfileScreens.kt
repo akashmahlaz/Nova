@@ -315,13 +315,112 @@ fun EditProfileScreen(nav: Navigator) {
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
             )
         }
-        ReadOnlyField("Email", user?.email ?: "Not set") {
-            if (!user?.email.isNullOrBlank()) VerifiedPill()
+        var verifyChannel by remember { mutableStateOf<String?>(null) }
+        ReadOnlyField("Email", user?.email ?: "Not set", onClick = if (user?.emailVerifiedAt == null) ({ verifyChannel = "email" }) else null) {
+            if (user?.emailVerifiedAt != null) {
+                VerifiedPill()
+            } else {
+                TextButton(onClick = { verifyChannel = "email" }) {
+                    Text(if (user?.email.isNullOrBlank()) "Add" else "Verify", fontWeight = FontWeight.Bold)
+                }
+            }
         }
-        ReadOnlyField("Mobile", user?.phone ?: "Not set") {
-            if (!user?.phone.isNullOrBlank()) VerifiedPill()
+        ReadOnlyField("Mobile", user?.phone ?: "Not set", onClick = if (user?.phoneVerifiedAt == null) ({ verifyChannel = "phone" }) else null) {
+            if (user?.phoneVerifiedAt != null) {
+                VerifiedPill()
+            } else {
+                TextButton(onClick = { verifyChannel = "phone" }) {
+                    Text(if (user?.phone.isNullOrBlank()) "Add" else "Verify", fontWeight = FontWeight.Bold)
+                }
+            }
         }
         ReadOnlyField("Emergency contact", contactSummary, onClick = { nav.go(Safety) }) { Icon(NovaIcons.Chev, null) }
+
+        verifyChannel?.let { channel ->
+            VerifyContactSheet(
+                channel = channel,
+                initialValue = if (channel == "email") user?.email.orEmpty() else user?.phone.orEmpty(),
+                onDismiss = { verifyChannel = null },
+                onVerified = { updated ->
+                    AuthStore.updateUser(updated)
+                    verifyChannel = null
+                },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VerifyContactSheet(
+    channel: String,
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onVerified: (com.nova.rider.data.auth.User) -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    val isEmail = channel == "email"
+    var destination by remember { mutableStateOf(initialValue) }
+    var code by remember { mutableStateOf("") }
+    var codeSent by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(if (isEmail) "Verify email" else "Verify mobile number", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            NovaTextField(
+                value = destination,
+                onValueChange = { destination = it },
+                label = if (isEmail) "Email address" else "Mobile (+country code)",
+                placeholder = if (isEmail) "you@example.com" else "+64 21 555 0142",
+                keyboardOptions = KeyboardOptions(keyboardType = if (isEmail) KeyboardType.Email else KeyboardType.Phone),
+            )
+            if (codeSent) {
+                NovaTextField(
+                    value = code,
+                    onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                    label = "6-digit code",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                )
+            }
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
+            NovaButton(
+                when {
+                    busy -> "Please wait…"
+                    codeSent -> "Verify & save"
+                    else -> "Send code"
+                },
+                enabled = !busy && (if (codeSent) code.length == 6 else if (isEmail) destination.contains('@') else destination.trim().startsWith("+")),
+                onClick = {
+                    val dest = if (isEmail) destination.trim().lowercase() else destination.trim()
+                    scope.launch {
+                        busy = true
+                        error = null
+                        try {
+                            if (!codeSent) {
+                                NovaApi.sendOtp(channel, dest, "signup")
+                                codeSent = true
+                            } else {
+                                val res = NovaApi.verifyOtp(channel, dest, "signup", code)
+                                val proof = (res as com.nova.rider.data.auth.VerifyResult.Proof).token
+                                val updated = NovaApi.verifyContact(proof)
+                                onVerified(updated)
+                            }
+                        } catch (e: Throwable) {
+                            error = authErrorMessage(e)
+                        } finally {
+                            busy = false
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
     }
 }
 

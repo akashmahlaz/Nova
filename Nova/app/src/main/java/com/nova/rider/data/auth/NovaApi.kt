@@ -27,6 +27,9 @@ data class User(
     val email: String? = null,
     @SerialName("first_name") val firstName: String,
     @SerialName("last_name") val lastName: String = "",
+    val role: String = "rider",
+    @SerialName("phone_verified_at") val phoneVerifiedAt: String? = null,
+    @SerialName("email_verified_at") val emailVerifiedAt: String? = null,
 )
 
 @Serializable
@@ -98,12 +101,21 @@ object NovaApi {
         }
     }
 
-    suspend fun signup(firstName: String, lastName: String, phoneProof: String, emailProof: String): Session = withContext(Dispatchers.IO) {
+    suspend fun signup(
+        firstName: String,
+        lastName: String,
+        phoneProof: String? = null,
+        emailProof: String? = null,
+        phone: String? = null,
+        email: String? = null,
+    ): Session = withContext(Dispatchers.IO) {
         val body = buildJsonObject {
             put("first_name", firstName)
             put("last_name", lastName)
-            put("phone_proof", phoneProof)
-            put("email_proof", emailProof)
+            phoneProof?.takeIf { it.isNotBlank() }?.let { put("phone_proof", it) }
+            emailProof?.takeIf { it.isNotBlank() }?.let { put("email_proof", it) }
+            phone?.takeIf { it.isNotBlank() }?.let { put("phone", it) }
+            email?.takeIf { it.isNotBlank() }?.let { put("email", it) }
         }
         request("POST", "/v1/auth/signup", body).toSession()
     }
@@ -160,6 +172,11 @@ object NovaApi {
             put("last_name", lastName)
         }
         val res = requestAuth("PATCH", "/v1/me", body)
+        json.decodeFromJsonElement(User.serializer(), res)
+    }
+
+    suspend fun verifyContact(otpProof: String): User = withContext(Dispatchers.IO) {
+        val res = requestAuth("POST", "/v1/me/verify-contact", buildJsonObject { put("otp_proof", otpProof) })
         json.decodeFromJsonElement(User.serializer(), res)
     }
 

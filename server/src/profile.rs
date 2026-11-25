@@ -3,7 +3,7 @@
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::{delete, get, patch},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -13,14 +13,15 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::{
-    auth::{canonical_phone, load_user, require_user_id, validation_error, User},
-    error::ApiError,
+    auth::{canonical_phone, jwt, load_user, require_user_id, validation_error, User},
+    error::{is_unique_violation, ApiError},
     AppState,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/me", patch(update_me))
+        .route("/v1/me/verify-contact", post(verify_contact))
         .route("/v1/places", get(list_places).post(upsert_place))
         .route("/v1/places/{id}", delete(delete_place))
         .route("/v1/emergency-contacts", get(list_contacts).post(create_contact))
@@ -56,6 +57,44 @@ async fn update_me(
         .execute(&st.pool)
         .await?;
 
+    Ok(Json(load_user(&st, user_id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct VerifyContactReq {
+    otp_proof: String,
+}
+
+async fn verify_contact(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<VerifyContactReq>,
+) -> Result<Json<User>, ApiError> {
+    let user_id = require_user_id(&st, &headers)?;
+    let claims = jwt::decode_typed(&st.cfg.jwt_secret, &req.otp_proof, jwt::TYP_PROOF)?;
+    let dest = claims.dest.ok_or(ApiError::Unauthorized)?;
+    let res = match claims.channel.as_deref() {
+        Some("phone") => {
+            sqlx::query("UPDATE users SET phone_e164 = $1, phone_verified_at = now(), updated_at = now() WHERE id = $2")
+                .bind(&dest)
+                .bind(user_id)
+                .execute(&st.pool)
+                .await
+        }
+        Some("email") => {
+            sqlx::query("UPDATE users SET email = $1, email_verified_at = now(), updated_at = now() WHERE id = $2")
+                .bind(&dest)
+                .bind(user_id)
+                .execute(&st.pool)
+                .await
+        }
+        _ => return Err(ApiError::BadRequest("proof_mismatch")),
+    };
+    match res {
+        Ok(_) => {}
+        Err(err) if is_unique_violation(&err) => return Err(ApiError::Conflict("already_registered")),
+        Err(err) => return Err(err.into()),
+    }
     Ok(Json(load_user(&st, user_id).await?))
 }
 

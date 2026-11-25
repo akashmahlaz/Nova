@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 mod config;
 mod error;
@@ -9,6 +10,7 @@ use axum::{http::StatusCode, routing::get, Router};
 use redis::aio::ConnectionManager;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::{
+    cors::CorsLayer,
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     timeout::TimeoutLayer,
@@ -137,6 +139,8 @@ async fn main() {
         )
         .merge(auth::router())
         .merge(profile::router())
+        .merge(admin::router())
+        .layer(CorsLayer::permissive())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(TraceLayer::new_for_http())

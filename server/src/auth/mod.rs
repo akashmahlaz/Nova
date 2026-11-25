@@ -92,6 +92,9 @@ pub struct User {
     pub email: Option<String>,
     pub first_name: String,
     pub last_name: String,
+    pub role: String,
+    pub phone_verified_at: Option<DateTime<Utc>>,
+    pub email_verified_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -177,15 +180,15 @@ pub(crate) fn validation_error(report: garde::Report) -> ApiError {
 
 async fn find_user_by(st: &AppState, channel: Channel, destination: &str) -> Result<Option<User>, ApiError> {
     let sql = match channel {
-        Channel::Phone => "SELECT id, phone_e164, email, first_name, last_name, created_at FROM users WHERE phone_e164 = $1",
-        Channel::Email => "SELECT id, phone_e164, email, first_name, last_name, created_at FROM users WHERE email = $1",
+        Channel::Phone => "SELECT id, phone_e164, email, first_name, last_name, role, phone_verified_at, email_verified_at, created_at FROM users WHERE phone_e164 = $1",
+        Channel::Email => "SELECT id, phone_e164, email, first_name, last_name, role, phone_verified_at, email_verified_at, created_at FROM users WHERE email = $1",
     };
     Ok(sqlx::query_as::<_, User>(sql).bind(destination).fetch_optional(&st.pool).await?)
 }
 
 pub(crate) async fn load_user(st: &AppState, id: Uuid) -> Result<User, ApiError> {
     sqlx::query_as::<_, User>(
-        "SELECT id, phone_e164, email, first_name, last_name, created_at FROM users WHERE id = $1",
+        "SELECT id, phone_e164, email, first_name, last_name, role, phone_verified_at, email_verified_at, created_at FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(&st.pool)
@@ -386,10 +389,14 @@ pub struct SignupReq {
     #[garde(length(max = 60))]
     #[serde(default)]
     last_name: String,
-    #[garde(length(min = 1))]
-    phone_proof: String,
-    #[garde(length(min = 1))]
-    email_proof: String,
+    #[garde(skip)]
+    phone_proof: Option<String>,
+    #[garde(skip)]
+    email_proof: Option<String>,
+    #[garde(skip)]
+    phone: Option<String>,
+    #[garde(skip)]
+    email: Option<String>,
 }
 
 async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Result<(StatusCode, Json<SessionRes>), ApiError> {
@@ -400,24 +407,48 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
         return Err(ApiError::BadRequest("invalid_name"));
     }
 
-    let phone = jwt::decode_typed(&st.cfg.jwt_secret, &req.phone_proof, jwt::TYP_PROOF)?;
-    let email = jwt::decode_typed(&st.cfg.jwt_secret, &req.email_proof, jwt::TYP_PROOF)?;
-    if phone.channel.as_deref() != Some("phone") || email.channel.as_deref() != Some("email") {
+    let mut phone_e164: Option<String> = None;
+    let mut phone_verified = false;
+    if let Some(proof) = req.phone_proof.as_deref().filter(|s| !s.is_empty()) {
+        let claims = jwt::decode_typed(&st.cfg.jwt_secret, proof, jwt::TYP_PROOF)?;
+        if claims.channel.as_deref() != Some("phone") {
+            return Err(ApiError::BadRequest("proof_mismatch"));
+        }
+        phone_e164 = Some(claims.dest.ok_or(ApiError::Unauthorized)?);
+        phone_verified = true;
+    } else if let Some(raw_phone) = req.phone.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        phone_e164 = Some(canonical_phone(raw_phone).ok_or(ApiError::BadRequest("invalid_phone"))?);
+    }
+
+    let mut email_addr: Option<String> = None;
+    let mut email_verified = false;
+    if let Some(proof) = req.email_proof.as_deref().filter(|s| !s.is_empty()) {
+        let claims = jwt::decode_typed(&st.cfg.jwt_secret, proof, jwt::TYP_PROOF)?;
+        if claims.channel.as_deref() != Some("email") {
+            return Err(ApiError::BadRequest("proof_mismatch"));
+        }
+        email_addr = Some(claims.dest.ok_or(ApiError::Unauthorized)?);
+        email_verified = true;
+    } else if let Some(raw_email) = req.email.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        email_addr = Some(canonical_email(raw_email).ok_or(ApiError::BadRequest("invalid_email"))?);
+    }
+
+    if !phone_verified && !email_verified {
         return Err(ApiError::BadRequest("proof_mismatch"));
     }
-    let phone_e164 = phone.dest.ok_or(ApiError::Unauthorized)?;
-    let email_addr = email.dest.ok_or(ApiError::Unauthorized)?;
 
     let id = Uuid::now_v7();
     let inserted = sqlx::query(
         "INSERT INTO users (id, phone_e164, email, first_name, last_name, phone_verified_at, email_verified_at)
-         VALUES ($1, $2, $3, $4, $5, now(), now())",
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() ELSE NULL END, CASE WHEN $7 THEN now() ELSE NULL END)",
     )
     .bind(id)
     .bind(&phone_e164)
     .bind(&email_addr)
     .bind(&first_name)
     .bind(&last_name)
+    .bind(phone_verified)
+    .bind(email_verified)
     .execute(&st.pool)
     .await;
     match inserted {

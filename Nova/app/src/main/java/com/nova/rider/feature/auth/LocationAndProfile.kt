@@ -270,17 +270,17 @@ fun ProfileSetupScreen(nav: Navigator) {
                     }
 
                     if (isEmailFirst) {
-                        // User verified email on Step 1. Collect mobile number to reach them during rides.
+                        // User verified email on Step 1. Mobile number is optional and can be verified later in settings.
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Mobile number for pickups & trips", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant)
+                            Text("Mobile number (optional)", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant)
                             PhoneRow(country, phone, onCountryClick = { showCountries = true }) { phone = it }
                         }
                     } else {
-                        // User verified phone on Step 1. Collect email for trip invoices and receipts.
+                        // User verified phone on Step 1. Email is optional and can be verified later in settings.
                         NovaTextField(
                             email,
                             { email = it },
-                            "Email for receipts",
+                            "Email for receipts (optional)",
                             placeholder = "you@example.com",
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         )
@@ -304,31 +304,32 @@ fun ProfileSetupScreen(nav: Navigator) {
                 ) {
                     error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.error) }
 
-                    val e164 = if (isEmailFirst) country?.let { PhoneRegions.toE164(it.iso, phone) } else null
-                    val canProceed = if (isEmailFirst) {
-                        first.isNotBlank() && e164 != null && !busy
+                    val e164 = if (isEmailFirst && phone.isNotBlank()) country?.let { PhoneRegions.toE164(it.iso, phone) } else null
+                    val optionalValid = if (isEmailFirst) {
+                        phone.isBlank() || e164 != null
                     } else {
-                        first.isNotBlank() && email.contains('@') && !busy
+                        email.isBlank() || email.contains('@')
                     }
+                    val canProceed = first.isNotBlank() && optionalValid && !busy
 
                     NovaButton(
-                        "Let's ride",
+                        if (busy) "Creating account…" else "Let's ride",
                         onClick = {
                             scope.launch {
                                 busy = true
                                 error = null
                                 try {
-                                    if (isEmailFirst) {
-                                        val number = e164 ?: return@launch
-                                        NovaApi.sendOtp("phone", number, "signup")
-                                        AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), phone = number)
-                                        nav.go(Otp("phone", number, "signup"))
-                                    } else {
-                                        val address = email.trim().lowercase()
-                                        NovaApi.sendOtp("email", address, "signup")
-                                        AuthStore.draft = AuthStore.draft.copy(firstName = first.trim(), lastName = last.trim(), email = address)
-                                        nav.go(Otp("email", address, "signup"))
-                                    }
+                                    val session = NovaApi.signup(
+                                        firstName = first.trim(),
+                                        lastName = last.trim(),
+                                        phoneProof = draft.phoneProof.takeIf { it.isNotBlank() },
+                                        emailProof = draft.emailProof.takeIf { it.isNotBlank() },
+                                        phone = if (isEmailFirst) e164 else null,
+                                        email = if (!isEmailFirst) email.trim().lowercase().takeIf { it.isNotBlank() } else null,
+                                    )
+                                    AuthStore.saveSession(session)
+                                    AuthStore.draft = com.nova.rider.data.auth.SignupDraft()
+                                    nav.reset(com.nova.rider.navigation.Home)
                                 } catch (e: Throwable) {
                                     error = authErrorMessage(e)
                                 } finally {
