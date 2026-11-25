@@ -37,12 +37,27 @@ pub fn router() -> Router<AppState> {
         .route("/v1/auth/passkey/login/verify", post(login_verify))
 }
 
+fn android_apk_origin(hex_fp: &str) -> Option<Url> {
+    let clean: String = hex_fp.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if clean.len() != 64 {
+        return None;
+    }
+    let bytes = hex::decode(&clean).ok()?;
+    let b64 = base64url_encode(&bytes);
+    Url::parse(&format!("android:apk-key-hash:{b64}")).ok()
+}
+
 fn build_webauthn(st: &AppState) -> Result<Webauthn, ApiError> {
-    let origin = reqwest::Url::parse(&st.cfg.passkey_rp_origin).map_err(|_| ApiError::Internal)?;
-    WebauthnBuilder::new(&st.cfg.passkey_rp_id, &origin)
-        .map_err(|_| ApiError::Internal)?
-        .build()
-        .map_err(|_| ApiError::Internal)
+    let origin = Url::parse(&st.cfg.passkey_rp_origin).map_err(|_| ApiError::Internal)?;
+    let mut builder = WebauthnBuilder::new(&st.cfg.passkey_rp_id, &origin).map_err(|_| ApiError::Internal)?;
+    if let Ok(raw) = std::env::var("PASSKEY_ASSETLINKS_FINGERPRINT") {
+        for fp in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(apk_origin) = android_apk_origin(fp) {
+                builder = builder.append_allowed_origin(&apk_origin);
+            }
+        }
+    }
+    builder.build().map_err(|_| ApiError::Internal)
 }
 
 /// Extracts the user from a `Authorization: Bearer <token>` header.
@@ -117,7 +132,10 @@ async fn register_verify(
 
     let passkey = webauthn
         .finish_passkey_registration(&reg_credential, &reg_state)
-        .map_err(|_| ApiError::BadRequest("passkey_verification_failed"))?;
+        .map_err(|err| {
+            tracing::warn!(error = ?err, "passkey registration verification failed");
+            ApiError::BadRequest("passkey_verification_failed")
+        })?;
 
     let cred_id = base64url_encode(passkey.cred_id().as_ref());
 
@@ -215,7 +233,10 @@ async fn login_verify(
 
     let auth_result = webauthn
         .finish_discoverable_authentication(&auth_credential, auth_state, &[discoverable])
-        .map_err(|_| ApiError::Unauthorized)?;
+        .map_err(|err| {
+            tracing::warn!(error = ?err, "passkey login verification failed");
+            ApiError::Unauthorized
+        })?;
 
     // Update the stored counter (clone detection is handled by the library).
     let new_counter = auth_result.counter() as i64;
