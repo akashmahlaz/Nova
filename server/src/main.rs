@@ -1,11 +1,17 @@
 mod account;
 mod admin;
+mod contacts;
 mod auth;
 mod config;
+mod dispatch;
+mod drivers;
 mod error;
 mod geo;
+mod hub;
+mod media;
 mod profile;
 mod rides;
+mod s3;
 
 use std::{sync::Arc, time::Duration};
 
@@ -37,6 +43,10 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// In-memory "H3 cell -> service area" memo (see geo::AreaCache).
     pub areas: geo::AreaCache,
+    /// Open WebSockets, for pushing offers and ride updates (see hub.rs).
+    pub hub: hub::Hub,
+    /// Running dispatch tasks, so a driver's answer wakes the right one (see dispatch.rs).
+    pub dispatch: dispatch::Dispatch,
 }
 
 #[tokio::main]
@@ -93,7 +103,14 @@ async fn main() {
             .build()
             .expect("failed to build HTTP client"),
         areas: geo::AreaCache::default(),
+        hub: hub::Hub::default(),
+        dispatch: dispatch::Dispatch::default(),
     };
+    if state.cfg.driver_auto_approve {
+        tracing::warn!("DRIVER_AUTO_APPROVE=true: driver applications are approved without review. Development only.");
+    }
+    // Resumes open requests after a restart and moves due scheduled rides into dispatch.
+    dispatch::spawn_background(state.clone());
 
     let app = Router::new()
         .route("/", get(|| async {
@@ -163,6 +180,10 @@ async fn main() {
         .merge(geo::router())
         .merge(rides::router())
         .merge(account::router())
+        .merge(contacts::router())
+        .merge(drivers::router())
+        .merge(hub::router())
+        .merge(media::router())
         .merge(admin::router())
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -179,6 +200,10 @@ async fn main() {
                     HeaderValue::from_static("https://nova-web-production.punjab.fireclaw.in"),
                     HeaderValue::from_static("http://localhost:3000"),
                     HeaderValue::from_static("http://127.0.0.1:3000"),
+                    HeaderValue::from_static("http://localhost:3001"),
+                    HeaderValue::from_static("http://127.0.0.1:3001"),
+                    HeaderValue::from_static("http://localhost:3002"),
+                    HeaderValue::from_static("http://127.0.0.1:3002"),
                 ]))
                 .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
                 .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]),

@@ -1,7 +1,13 @@
-const API_BASE =
-  (typeof import.meta !== 'undefined' &&
-    (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL) ||
+const rawEnv =
+  typeof import.meta !== 'undefined'
+    ? (import.meta as unknown as { env?: Record<string, string> }).env
+    : undefined
+
+const API_BASE = (
+  rawEnv?.SERVER_BASE_URL ||
+  rawEnv?.VITE_API_BASE_URL ||
   'https://nova-server-production.punjab.fireclaw.in'
+).replace(/\/+$/, '')
 
 export interface User {
   id: string
@@ -22,12 +28,114 @@ export interface Session {
   user: User
 }
 
-export interface AdminStats {
+export interface DailyRidePoint {
+  day: string
+  total: number
+  completed: number
+  fare_cents: number
+}
+
+export interface AdminOverview {
   total_users: number
+  rider_users: number
+  driver_users: number
+  admin_users: number
   verified_phones: number
   verified_emails: number
+  total_drivers: number
+  pending_drivers: number
+  approved_drivers: number
+  suspended_drivers: number
+  total_rides: number
+  active_rides: number
+  completed_rides: number
+  cancelled_rides: number
+  scheduled_rides: number
+  gross_fare_cents: number
+  active_service_areas: number
+  total_service_areas: number
   saved_places: number
   emergency_contacts: number
+  media_total: number
+  media_pending_review: number
+  media_verified: number
+  media_bytes: number
+  s3_configured: boolean
+  s3_bucket: string | null
+  s3_region: string | null
+  daily_rides: DailyRidePoint[]
+}
+
+export interface AdminDriver {
+  user_id: string
+  first_name: string
+  last_name: string
+  phone_e164: string | null
+  status: 'pending' | 'approved' | 'suspended'
+  licence_number: string
+  licence_expiry: string | null
+  vehicle: string | null
+  created_at: string
+}
+
+export interface AdminRide {
+  id: string
+  status: string
+  product_id: string
+  service_area_name: string
+  rider_name: string
+  driver_name: string | null
+  pickup_name: string
+  dropoff_name: string
+  currency: string
+  fare_cents: number
+  distance_meters: number
+  duration_seconds: number
+  payment_method: string
+  created_at: string
+}
+
+export interface AdminServiceArea {
+  id: string
+  name: string
+  region_code: string
+  currency: string
+  timezone: string
+  active: boolean
+  rate_count: number
+  ride_count: number
+  created_at: string
+}
+
+export interface AdminMediaItem {
+  id: string
+  owner_user_id: string
+  owner_name: string
+  owner_role: string
+  bucket: string
+  object_key: string
+  category:
+    | 'avatar'
+    | 'driver_licence'
+    | 'driver_insurance'
+    | 'vehicle_reg'
+    | 'support_attachment'
+    | 'admin_asset'
+  file_name: string
+  content_type: string
+  size_bytes: number
+  status: 'pending' | 'uploaded' | 'verified' | 'rejected'
+  rejection_reason: string | null
+  view_url: string | null
+  created_at: string
+}
+
+interface PresignUploadRes {
+  media_id: string
+  bucket: string
+  object_key: string
+  upload_url: string
+  expires_in: number
 }
 
 const SESSION_KEY = 'nova_admin_session'
@@ -123,7 +231,7 @@ export const novaAdminApi = {
     saveStoredSession(null)
   },
 
-  getStats: () => requestJson<AdminStats>('/v1/admin/stats', {}, true),
+  getOverview: () => requestJson<AdminOverview>('/v1/admin/overview', {}, true),
 
   listUsers: () => requestJson<User[]>('/v1/admin/users', {}, true),
 
@@ -133,4 +241,94 @@ export const novaAdminApi = {
       { method: 'PATCH', body: JSON.stringify({ role }) },
       true,
     ),
+
+  createUser: (payload: {
+    first_name: string
+    last_name: string
+    email?: string
+    phone_e164?: string
+    role: 'rider' | 'driver' | 'admin'
+  }) =>
+    requestJson<User>(
+      '/v1/admin/users',
+      { method: 'POST', body: JSON.stringify(payload) },
+      true,
+    ),
+
+  updateUser: (
+    userId: string,
+    payload: {
+      first_name?: string
+      last_name?: string
+      email?: string
+      phone_e164?: string
+      role?: 'rider' | 'driver' | 'admin'
+      verify_email?: boolean
+      verify_phone?: boolean
+    },
+  ) =>
+    requestJson<User>(
+      `/v1/admin/users/${userId}`,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+      true,
+    ),
+
+  deleteUser: (userId: string) =>
+    requestJson<void>(`/v1/admin/users/${userId}`, { method: 'DELETE' }, true),
+
+  listDrivers: () => requestJson<AdminDriver[]>('/v1/admin/drivers', {}, true),
+
+  updateDriverStatus: (userId: string, status: 'pending' | 'approved' | 'suspended') =>
+    requestJson<void>(
+      `/v1/admin/drivers/${userId}`,
+      { method: 'PATCH', body: JSON.stringify({ status }) },
+      true,
+    ),
+
+  listRides: () => requestJson<AdminRide[]>('/v1/admin/rides', {}, true),
+
+  listServiceAreas: () => requestJson<AdminServiceArea[]>('/v1/admin/service-areas', {}, true),
+
+  toggleServiceArea: (id: string, active: boolean) =>
+    requestJson<void>(
+      `/v1/admin/service-areas/${id}`,
+      { method: 'PATCH', body: JSON.stringify({ active }) },
+      true,
+    ),
+
+  listMedia: () => requestJson<AdminMediaItem[]>('/v1/admin/media', {}, true),
+
+  reviewMedia: (id: string, status: 'verified' | 'rejected', rejection_reason?: string) =>
+    requestJson<void>(
+      `/v1/admin/media/${id}`,
+      { method: 'PATCH', body: JSON.stringify({ status, rejection_reason: rejection_reason || null }) },
+      true,
+    ),
+
+  deleteMedia: (id: string) =>
+    requestJson<void>(`/v1/admin/media/${id}`, { method: 'DELETE' }, true),
+
+  uploadToS3: async (file: File, category: AdminMediaItem['category'] = 'admin_asset') => {
+    const presign = await requestJson<PresignUploadRes>(
+      '/v1/media/presign-upload',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          category,
+          content_type: file.type || 'image/png',
+          file_name: file.name,
+        }),
+      },
+      true,
+    )
+    const putRes = await fetch(presign.upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'image/png' },
+      body: file,
+    })
+    if (!putRes.ok) {
+      throw new ApiError(`s3_upload_${putRes.status}`)
+    }
+    return requestJson(`/v1/media/${presign.media_id}/confirm`, { method: 'POST' }, true)
+  },
 }

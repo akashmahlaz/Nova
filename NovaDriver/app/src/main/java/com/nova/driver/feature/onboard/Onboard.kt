@@ -122,16 +122,35 @@ import kotlinx.coroutines.launch
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import com.nova.driver.data.api.ApiException
+import com.nova.driver.data.api.DriverApi
+import com.nova.driver.data.api.VerifyResult
+import com.nova.driver.data.api.errorMessage
+import com.nova.driver.data.auth.AuthStore
+import com.nova.driver.data.auth.SignInDraft
+import kotlinx.coroutines.async
 
 @Composable
 fun SplashScreen(nav: Navigator) {
-    LaunchedEffect(Unit) { delay(1800); nav.reset(Welcome) }
+    LaunchedEffect(Unit) {
+        val brand = async { delay(900) }
+        val route = if (AuthStore.session != null) DriverStore.entryRoute() else null
+        brand.await()
+        when {
+            AuthStore.session == null -> nav.reset(Welcome)
+            // Offline right now: Home works and retries when the driver acts.
+            route == null -> nav.reset(Home)
+            route == Home && DriverStore.state.online -> nav.goOnline()
+            route == ToPickup || route == Arrived || route == OnTrip -> { nav.reset(Home); nav.go(route) }
+            else -> nav.reset(route)
+        }
+    }
     val infinite = rememberInfiniteTransition(label = "splash")
     val spin by infinite.animateFloat(0f, 360f, infiniteRepeatable(tween(18_000, easing = LinearEasing)), label = "spin")
     val pulse by infinite.animateFloat(1f, 1.06f, infiniteRepeatable(tween(1200), RepeatMode.Reverse), label = "pulse")
     val ink = NovaTheme.colors.onCta
     Box(
-        Modifier.fillMaxSize().background(NovaTheme.colors.cta).clickable { nav.reset(Welcome) }
+        Modifier.fillMaxSize().background(NovaTheme.colors.cta).clickable(enabled = AuthStore.session == null) { nav.reset(Welcome) }
             .semantics { contentDescription = "Nova Driver. Tap to continue" },
     ) {
         ShapeBadge(NovaShape.Burst, 620.dp, ink, Modifier.offset((-115).dp, (-240).dp).alpha(0.06f).rotate(spin))
@@ -213,15 +232,41 @@ private fun PhonePrefix(text: String) {
 @Composable
 fun SignUpScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var first by rememberSaveable { mutableStateOf(Driver.firstName) }
-    var last by rememberSaveable { mutableStateOf("Kumar") }
-    var phone by rememberSaveable { mutableStateOf(Driver.phone) }
-    var email by rememberSaveable { mutableStateOf(Driver.email) }
+    val context = LocalContext.current
+    val region = remember { Phones.region(context) }
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var first by rememberSaveable { mutableStateOf("") }
+    var last by rememberSaveable { mutableStateOf("") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
     var city by rememberSaveable { mutableStateOf("Auckland") }
     var cityMenu by remember { mutableStateOf(false) }
     var endorsement by rememberSaveable { mutableIntStateOf(0) }
+    val continueSignUp = {
+        val e164 = Phones.toE164(region, phone)
+        if (e164 == null) error = "Enter a valid mobile number."
+        else scope.launch {
+            busy = true; error = null
+            try {
+                val sent = DriverApi.sendOtp(e164, "signup")
+                AuthStore.draft = SignInDraft(e164, "signup", first.trim(), last.trim(), sent.destinationHint, sent.resendIn)
+                nav.go(Otp)
+            } catch (e: ApiException) {
+                if (e.code == "already_registered") {
+                    // Already rides with Nova: same account drives too, so sign them in instead.
+                    runCatching { DriverApi.sendOtp(e164, "login") }
+                        .onSuccess { sent -> AuthStore.draft = SignInDraft(e164, "login", destinationHint = sent.destinationHint, resendIn = sent.resendIn); nav.go(Otp) }
+                        .onFailure { error = errorMessage(it) }
+                } else error = errorMessage(e)
+            } finally { busy = false }
+        }
+        Unit
+    }
     SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(0) }, bottom = {
-        NovaButton("Continue", onClick = { nav.go(Otp) }, enabled = first.isNotBlank() && phone.count(Char::isDigit) >= 8)
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
+        NovaButton(if (busy) "Sending code…" else "Continue", onClick = continueSignUp, enabled = !busy && first.isNotBlank() && phone.count(Char::isDigit) >= 6)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
             Text("Already driving with Nova? ", fontSize = 15.sp, color = c.onSurfaceVariant)
             Text("Log in", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.clickable { nav.go(Login) })
@@ -233,10 +278,10 @@ fun SignUpScreen(nav: Navigator) {
             NovaTextField(last, { last = it }, "Last name", Modifier.weight(1f), keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-            PhonePrefix("+64")
-            NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(13) }, "Mobile", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+            PhonePrefix(Phones.prefix(region))
+            NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null }, "Mobile", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
         }
-        NovaTextField(email, { email = it }, "Email", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
+        NovaTextField(email, { email = it }, "Email (optional)", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
         Box {
             Surface(onClick = { cityMenu = true }, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, c.outline), color = c.surface, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -267,7 +312,24 @@ fun SignUpScreen(nav: Navigator) {
 @Composable
 fun LoginScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var phone by rememberSaveable { mutableStateOf(Driver.phone) }
+    val context = LocalContext.current
+    val region = remember { Phones.region(context) }
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var phone by rememberSaveable { mutableStateOf("") }
+    val sendCode = {
+        val e164 = Phones.toE164(region, phone)
+        if (e164 == null) error = "Enter a valid mobile number."
+        else scope.launch {
+            busy = true; error = null
+            runCatching { DriverApi.sendOtp(e164, "login") }
+                .onSuccess { sent -> AuthStore.draft = SignInDraft(e164, "login", destinationHint = sent.destinationHint, resendIn = sent.resendIn); nav.go(Otp) }
+                .onFailure { error = errorMessage(it) }
+            busy = false
+        }
+        Unit
+    }
     SubPage(null, onBack = { nav.back() }, bottom = {
         TextButton(onClick = { nav.go(Help) }, modifier = Modifier.align(Alignment.CenterHorizontally).height(48.dp)) {
             Text("Trouble logging in?", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.primary)
@@ -289,11 +351,13 @@ fun LoginScreen(nav: Navigator) {
                 Text("Log in with your driver mobile number.", fontSize = 16.sp, lineHeight = 24.sp, color = c.onSurfaceVariant)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                PhonePrefix("NZ +64")
-                NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(13) }, "Mobile number", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+                PhonePrefix("$region ${Phones.prefix(region)}")
+                NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null }, "Mobile number", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
             }
-            NovaButton("Send code", onClick = { nav.go(Otp) }, enabled = phone.count(Char::isDigit) >= 8)
-            Surface(onClick = { nav.reset(Home) }, shape = RoundedCornerShape(20.dp), color = c.primaryContainer, contentColor = c.onPrimaryContainer, modifier = Modifier.fillMaxWidth().height(64.dp)) {
+            error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error) }
+            NovaButton(if (busy) "Sending code…" else "Send code", onClick = sendCode, enabled = !busy && phone.count(Char::isDigit) >= 6)
+            // Passkeys need this app registered with the passkey server; until then, say so plainly.
+            Surface(onClick = { error = "Passkey sign-in for drivers is coming soon. Use your mobile number for now." }, shape = RoundedCornerShape(20.dp), color = c.primaryContainer, contentColor = c.onPrimaryContainer, modifier = Modifier.fillMaxWidth().height(64.dp)) {
                 Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Icon(NovaIcons.Finger, null)
                     Column(Modifier.weight(1f)) {
@@ -310,26 +374,60 @@ fun LoginScreen(nav: Navigator) {
 @Composable
 fun OtpScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var code by rememberSaveable { mutableStateOf("5803") }
-    var seconds by rememberSaveable { mutableIntStateOf(31) }
-    LaunchedEffect(Unit) { while (seconds > 0) { delay(1000); seconds-- } }
+    val draft = AuthStore.draft
+    val scope = rememberCoroutineScope()
+    var code by rememberSaveable { mutableStateOf("") }
+    var seconds by rememberSaveable { mutableIntStateOf(draft.resendIn.coerceAtLeast(0)) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(seconds > 0) { while (seconds > 0) { delay(1000); seconds-- } }
+    val verify = {
+        scope.launch {
+            busy = true; error = null
+            try {
+                val session = when (val result = DriverApi.verifyOtp(draft.phone, draft.purpose, code)) {
+                    is VerifyResult.SignedIn -> result.session
+                    is VerifyResult.Proof -> DriverApi.signup(draft.firstName.ifBlank { "Driver" }, draft.lastName, draft.phone, result.token)
+                }
+                AuthStore.saveSession(session)
+                when (val route = DriverStore.entryRoute() ?: Vehicle) {
+                    Home -> if (DriverStore.state.online) nav.goOnline() else nav.reset(Home)
+                    ToPickup, Arrived, OnTrip -> { nav.reset(Home); nav.go(route) }
+                    else -> nav.reset(route)
+                }
+            } catch (e: Exception) {
+                error = errorMessage(e)
+                code = ""
+            } finally { busy = false }
+        }
+        Unit
+    }
+    val resend = {
+        scope.launch {
+            runCatching { DriverApi.sendOtp(draft.phone, draft.purpose) }
+                .onSuccess { seconds = it.resendIn; error = null }
+                .onFailure { error = errorMessage(it) }
+        }
+        Unit
+    }
     Column(Modifier.fillMaxSize().background(c.surface)) {
         NovaTopBar(onBack = { nav.back() })
         Column(Modifier.weight(1f).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Enter the 6-digit code", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp))
                 Row {
-                    Text("Sent to +64 ${Driver.phone} · ", fontSize = 15.sp, color = c.onSurfaceVariant)
-                    if (seconds > 0) Text("resend in 0:%02d".format(seconds), fontSize = 15.sp, color = c.onSurfaceVariant)
-                    else Text("Resend", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.clickable { seconds = 31 })
+                    Text("Sent to ${draft.destinationHint.ifBlank { draft.phone }} · ", fontSize = 15.sp, color = c.onSurfaceVariant)
+                    if (seconds > 0) Text("resend in %d:%02d".format(seconds / 60, seconds % 60), fontSize = 15.sp, color = c.onSurfaceVariant)
+                    else Text("Resend", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.clickable { resend() })
                 }
+                error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error) }
             }
             Row(Modifier.semantics { contentDescription = "Verification code, ${code.length} of 6 digits entered" }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 repeat(6) { i -> CodeBox(code.getOrNull(i), active = i == code.length, modifier = Modifier.weight(1f)) }
             }
             Spacer(Modifier.weight(1f))
-            NumberPad(onDigit = { if (code.length < 6) code += it }, onDelete = { code = code.dropLast(1) })
-            NovaButton("Verify", onClick = { nav.go(Vehicle) }, enabled = code.length == 6)
+            NumberPad(onDigit = { if (code.length < 6) { code += it; error = null } }, onDelete = { code = code.dropLast(1) })
+            NovaButton(if (busy) "Verifying…" else "Verify", onClick = verify, enabled = !busy && code.length == 6)
         }
     }
 }
@@ -340,13 +438,34 @@ private val CarColours = listOf("White" to Color(0xFFFFFFFF), "Silver" to Color(
 @Composable
 fun VehicleScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var model by rememberSaveable { mutableStateOf("Toyota Prius") }
-    var year by rememberSaveable { mutableStateOf("2021") }
-    var colour by rememberSaveable { mutableIntStateOf(0) }
-    SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(1) }, bottom = { NovaButton("Continue to documents", onClick = { nav.go(Documents) }) }) {
+    // Prefill from the car on file (changing car) or what was typed earlier this session.
+    val saved = DriverStore.me?.vehicle
+    val draft = DriverStore.vehicleDraft
+    var model by rememberSaveable { mutableStateOf(draft?.let { "${it.make} ${it.model}" } ?: saved?.let { "${it.make} ${it.model}" } ?: "") }
+    var year by rememberSaveable { mutableStateOf((draft?.year ?: saved?.year)?.toString() ?: "") }
+    var plate by rememberSaveable { mutableStateOf(draft?.plate ?: saved?.plate ?: "") }
+    var colour by rememberSaveable { mutableIntStateOf(CarColours.indexOfFirst { it.first == (draft?.color ?: saved?.color) }.coerceAtLeast(0)) }
+    var seats by rememberSaveable { mutableIntStateOf((draft?.seats ?: saved?.seats ?: 4).coerceIn(4, 7)) }
+    var electric by rememberSaveable { mutableStateOf(draft?.electric ?: saved?.isElectric ?: false) }
+    var wheelchair by rememberSaveable { mutableStateOf(draft?.wheelchair ?: saved?.wheelchairAccessible ?: false) }
+    LaunchedEffect(Unit) { DriverStore.loadRules() }
+    val thisYear = remember { java.time.Year.now().value }
+    val makeModel = model.trim().split(Regex("\\s+"), limit = 2)
+    val yearNum = year.toIntOrNull()
+    val plateClean = plate.trim().uppercase()
+    val valid = makeModel.size == 2 && yearNum != null && yearNum in 1990..thisYear + 1 &&
+        plateClean.length in 2..10 && plateClean.all { it.isLetterOrDigit() || it == ' ' || it == '-' }
+    val proceed = {
+        DriverStore.vehicleDraft = VehicleDraft(
+            make = makeModel[0], model = makeModel[1], color = CarColours[colour].first, plate = plateClean,
+            year = yearNum ?: thisYear, seats = seats, electric = electric, wheelchair = wheelchair,
+        )
+        nav.go(Documents)
+    }
+    SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(1) }, bottom = { NovaButton("Continue to documents", onClick = proceed, enabled = valid) }) {
         Text("Tell us about your car", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            NovaTextField(model, { model = it }, "Make & model", Modifier.weight(1.3f))
+            NovaTextField(model, { model = it.take(60) }, "Make & model", Modifier.weight(1.3f), placeholder = "Toyota Prius", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
             NovaTextField(year, { year = it.filter(Char::isDigit).take(4) }, "Year", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
         }
         Row(
@@ -357,8 +476,19 @@ fun VehicleScreen(nav: Navigator) {
                 Text("Plate", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
                 Text("We'll check rego & WoF/CoF with NZTA", fontSize = 14.sp, color = c.onSurfaceVariant)
             }
-            Box(Modifier.height(48.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).border(2.dp, c.onSurface, RoundedCornerShape(8.dp)).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-                Text(Driver.plate, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp)
+            Box(Modifier.height(48.dp).widthIn(min = 120.dp, max = 168.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).border(2.dp, c.onSurface, RoundedCornerShape(8.dp)).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                androidx.compose.foundation.text.BasicTextField(
+                    value = plate,
+                    onValueChange = { plate = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == ' ' || ch == '-' }.take(10) },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp, color = Color(0xFF1B1B21), textAlign = TextAlign.Center),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                    modifier = Modifier.semantics { contentDescription = "Number plate" },
+                    decorationBox = { inner ->
+                        if (plate.isEmpty()) Text("ABC123", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp, color = Color(0xFF9A9AA3), textAlign = TextAlign.Center)
+                        inner()
+                    },
+                )
             }
         }
         Text("Colour · ${CarColours[colour].first}", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
@@ -375,10 +505,26 @@ fun VehicleScreen(nav: Navigator) {
                 )
             }
         }
+        Text("Passenger seats", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+        ConnectedChoice(listOf("4", "5", "6", "7"), seats - 4, { seats = it + 4 })
+        Row(Modifier.fillMaxWidth().toggleable(electric, role = Role.Switch) { electric = it }.padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Fully electric", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Battery EV only, not hybrid", fontSize = 13.sp, color = c.onSurfaceVariant)
+            }
+            Switch(electric, null, colors = SwitchDefaults.colors(checkedTrackColor = NovaTheme.colors.cta, checkedThumbColor = NovaTheme.colors.onCta))
+        }
+        Row(Modifier.fillMaxWidth().toggleable(wheelchair, role = Role.Switch) { wheelchair = it }.padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Wheelchair accessible", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("Ramp or lift, room for a wheelchair", fontSize = 13.sp, color = c.onSurfaceVariant)
+            }
+            Switch(wheelchair, null, colors = SwitchDefaults.colors(checkedTrackColor = NovaTheme.colors.cta, checkedThumbColor = NovaTheme.colors.onCta))
+        }
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.surfaceContainerLow).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Your $year ${model.substringAfter(' ', model)} can drive", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+            Text(if (yearNum != null && makeModel.size == 2) "Your $year ${makeModel[1]} can drive" else "Ride types your car can drive", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Go" to true, "Comfort" to true, "Electric" to false, "XL" to false).forEach { (t, ok) ->
+                DriverStore.rules.map { it.name to it.allows(seats, electric, yearNum ?: 0, thisYear) }.forEach { (t, ok) ->
                     Row(
                         Modifier.height(36.dp).clip(RoundedCornerShape(10.dp))
                             .then(if (ok) Modifier.background(c.primaryContainer) else Modifier.border(1.dp, c.outlineVariant, RoundedCornerShape(10.dp)))
@@ -390,7 +536,15 @@ fun VehicleScreen(nav: Navigator) {
                     }
                 }
             }
-            Text("Electric needs a full EV. XL needs 6+ seats.", fontSize = 13.sp, color = c.onSurfaceVariant)
+            val notes = DriverStore.rules.mapNotNull { r ->
+                when {
+                    r.requiresElectric -> "${r.name} needs a full EV."
+                    r.maxVehicleAgeYears != null -> "${r.name} needs a car from ${thisYear - r.maxVehicleAgeYears} or newer."
+                    r.seats > 4 -> "${r.name} needs ${r.seats}+ seats."
+                    else -> null
+                }
+            }
+            if (notes.isNotEmpty()) Text(notes.joinToString(" "), fontSize = 13.sp, color = c.onSurfaceVariant)
         }
     }
 }
@@ -400,19 +554,52 @@ private data class Doc(val id: String, val name: String, val sub: String, val do
 @Composable
 fun DocumentsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
     val uploaded = remember { mutableStateListOf<String>() }
+    var licence by rememberSaveable { mutableStateOf(DriverStore.licenceNumber.ifBlank { DriverStore.me?.driver?.licenceNumber ?: "" }) }
+    var licenceSheet by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val licenceOk = licence.trim().length in 4..20 && licence.trim().all { it.isLetterOrDigit() || it == '-' }
+    val car = DriverStore.vehicleDraft ?: DriverStore.me?.vehicle?.let { VehicleDraft(it.make, it.model, it.color, it.plate, it.year, it.seats, it.isElectric, it.wheelchairAccessible) }
     val docs = listOf(
-        Doc("dl", "Driving licence", "Verified", true),
-        Doc("rc", "Vehicle rego", "${Driver.plate} · verified", true),
-        Doc("pe", "P endorsement", "Verified", true),
-        Doc("ph", "Profile photo", "Looks great", true),
+        Doc("dl", "Driving licence", if (licenceOk) "Licence ${licence.trim().uppercase()}" else "Enter your licence number", licenceOk),
+        Doc("rc", "Vehicle rego", car?.let { "${it.plate} · ${it.year} ${it.make} ${it.model}" } ?: "Add your car first", car != null),
+        // Uploads are recorded on this phone for now; document storage and review come next.
+        Doc("pe", "P endorsement", "Photo of your endorsement", false),
+        Doc("ph", "Profile photo", "Riders see this when you arrive", false),
         Doc("in", "Vehicle insurance", "Required to go online", false),
         Doc("bk", "Bank account", "For daily payouts", false),
     ).map { if (it.id in uploaded) it.copy(done = true, sub = "Uploaded · in review") else it }
     val done = docs.count { it.done }
     val ready = done == docs.size
+    val submit = {
+        scope.launch {
+            busy = true; error = null
+            DriverStore.licenceNumber = licence.trim().uppercase()
+            runCatching { DriverStore.submitApplication() }
+                .onSuccess { nav.go(Bank) }
+                .onFailure { error = errorMessage(it) }
+            busy = false
+        }
+        Unit
+    }
+    if (licenceSheet) {
+        ModalBottomSheet(onDismissRequest = { licenceSheet = false }, containerColor = c.surface) {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("Driving licence", style = MaterialTheme.typography.headlineSmall)
+                Text("The number on the front of your licence card (5a on NZ licences).", fontSize = 14.sp, color = c.onSurfaceVariant)
+                NovaTextField(licence, { licence = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(20) }, "Licence number", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters))
+                NovaButton("Save", onClick = { licenceSheet = false }, enabled = licenceOk)
+            }
+        }
+    }
     SubPage(null, onBack = { nav.back() }, bottom = {
-        NovaButton(if (ready) "Submit for review" else "Finish ${docs.size - done} more to continue", onClick = { nav.go(Bank) }, enabled = ready)
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
+        NovaButton(
+            when { busy -> "Submitting…"; ready -> "Submit for review"; else -> "Finish ${docs.size - done} more to continue" },
+            onClick = submit, enabled = ready && !busy,
+        )
     }) {
         Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Get road-ready", style = MaterialTheme.typography.headlineLarge)
@@ -422,8 +609,14 @@ fun DocumentsScreen(nav: Navigator) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             docs.forEachIndexed { i, d ->
                 Surface(
-                    onClick = { if (!d.done) { if (d.id == "in") nav.go(Scan) else uploaded.add(d.id) } },
-                    enabled = !d.done, shape = groupShape(i, docs.size),
+                    onClick = {
+                        when {
+                            d.id == "dl" -> licenceSheet = true
+                            d.id == "rc" -> nav.back()
+                            !d.done -> if (d.id == "in") nav.go(Scan) else uploaded.add(d.id)
+                        }
+                    },
+                    enabled = !d.done || d.id == "dl" || d.id == "rc", shape = groupShape(i, docs.size),
                     color = if (d.done) c.surfaceContainer else c.surfaceContainerHigh, modifier = Modifier.fillMaxWidth(),
                 ) {
                     Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -522,9 +715,9 @@ fun ScanScreen(nav: Navigator) {
 @Composable
 fun BankScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var name by rememberSaveable { mutableStateOf("R Kumar") }
-    var account by rememberSaveable { mutableStateOf("12-3456-0123456-00") }
-    var ird by rememberSaveable { mutableStateOf("123-456-789") }
+    var name by rememberSaveable { mutableStateOf("") }
+    var account by rememberSaveable { mutableStateOf("") }
+    var ird by rememberSaveable { mutableStateOf("") }
     var gst by rememberSaveable { mutableStateOf(false) }
     var schedule by rememberSaveable { mutableIntStateOf(0) }
     // NZ format: BB-bbbb-AAAAAAA-SS(S); bank 12 = ASB.
@@ -555,16 +748,39 @@ fun BankScreen(nav: Navigator) {
 @Composable
 fun PendingScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    val status = DriverStore.me?.driver?.status ?: "pending"
+    val approved = status == "approved"
+    val suspended = status == "suspended"
+    // Review can finish any minute (an admin, or instantly in development): keep checking.
+    LaunchedEffect(Unit) {
+        while (true) {
+            runCatching { DriverStore.refreshMe() }
+            if (DriverStore.me?.driver?.status == "approved") break
+            delay(10_000)
+        }
+    }
     Column(
         Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 48.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Box(Modifier.size(140.dp).clip(CircleShape).background(c.surfaceContainerHigh), contentAlignment = Alignment.Center) {
-                LoadingIndicator(Modifier.size(84.dp), color = c.primary)
+            Box(Modifier.size(140.dp).clip(CircleShape).background(if (approved) NovaTheme.colors.cta else c.surfaceContainerHigh), contentAlignment = Alignment.Center) {
+                if (approved) Icon(NovaIcons.Check, null, Modifier.size(64.dp), tint = NovaTheme.colors.onCta)
+                else LoadingIndicator(Modifier.size(84.dp), color = c.primary)
             }
-            Text("You're almost in", style = MaterialTheme.typography.headlineLarge.copy(fontSize = 34.sp, lineHeight = 38.sp), textAlign = TextAlign.Center)
-            Text("We're checking your documents. We'll notify you the moment you can go online.", fontSize = 16.sp, lineHeight = 23.sp, color = c.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp))
+            Text(
+                when { approved -> "You're approved"; suspended -> "Account paused"; else -> "You're almost in" },
+                style = MaterialTheme.typography.headlineLarge.copy(fontSize = 34.sp, lineHeight = 38.sp), textAlign = TextAlign.Center,
+            )
+            Text(
+                when {
+                    approved -> "Welcome to Nova. Go online whenever you're ready to take trips."
+                    suspended -> "Driver support will contact you about your account."
+                    else -> "We're checking your documents. We'll notify you the moment you can go online."
+                },
+                fontSize = 16.sp, lineHeight = 23.sp, color = c.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp),
+            )
         }
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(Modifier.fillMaxWidth().clip(groupShape(0, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -575,11 +791,11 @@ fun PendingScreen(nav: Navigator) {
             Row(Modifier.fillMaxWidth().clip(groupShape(1, 3)).background(c.surfaceContainerHigh).border(2.dp, c.primaryContainer, groupShape(1, 3)).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(c.primaryContainer), contentAlignment = Alignment.Center) { Text("2", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.primary) }
                 Text("Background check", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Text("In progress", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.primary)
+                Text(if (approved) "Done" else "In progress", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.primary)
             }
             Row(Modifier.fillMaxWidth().clip(groupShape(2, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Box(Modifier.size(32.dp).border(2.dp, c.outline, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) { Text("3", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = c.onSurfaceVariant) }
-                Text("Ready to drive", fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = c.onSurfaceVariant)
+                Text("Ready to drive", fontSize = 16.sp, fontWeight = if (approved) FontWeight.Bold else FontWeight.SemiBold, color = if (approved) c.onSurface else c.onSurfaceVariant)
             }
         }
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(c.tertiaryContainer).padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -590,6 +806,7 @@ fun PendingScreen(nav: Navigator) {
             }
         }
         Spacer(Modifier.weight(1f))
-        NovaOutlinedButton("Preview the driver home", onClick = { nav.reset(Home) }, modifier = Modifier.fillMaxWidth())
+        if (approved) NovaButton("Start driving", onClick = { nav.reset(Home) }, height = 72.dp)
+        else NovaOutlinedButton("Check again", onClick = { scope.launch { runCatching { DriverStore.refreshMe() } } }, modifier = Modifier.fillMaxWidth())
     }
 }

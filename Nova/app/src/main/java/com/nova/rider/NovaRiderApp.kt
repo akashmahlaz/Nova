@@ -58,7 +58,10 @@ private fun EnsureLocalNetworkAccess() {
  * [Route] is @Serializable) and one entry per screen.
  */
 @Composable
-fun NovaRiderApp() {
+fun NovaRiderApp(
+    trackToken: String? = null,
+    onTrackTokenHandled: () -> Unit = {},
+) {
     val context = LocalContext.current
     remember(context) {
         AuthStore.init(context)
@@ -68,6 +71,12 @@ fun NovaRiderApp() {
     EnsureLocalNetworkAccess()
     val backStack = rememberNavBackStack(Splash)
     val nav = remember(backStack) { Navigator(backStack) }
+    LaunchedEffect(trackToken) {
+        if (!trackToken.isNullOrBlank()) {
+            nav.go(TrackRide(trackToken))
+            onTrackTokenHandled()
+        }
+    }
     val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<androidx.compose.ui.unit.IntOffset>()
     val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     NavDisplay(
@@ -140,6 +149,7 @@ fun NovaRiderApp() {
             entry<NoService> { NoServiceScreen(nav) }
             entry<EmptyActivity> { ActivityScreen(nav, empty = true) }
             entry<SosActive> { SosActiveScreen(nav) }
+            entry<TrackRide> { key -> TrackRideScreen(nav, key.token) }
         },
     )
 }

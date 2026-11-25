@@ -8,6 +8,7 @@ import babel from '@rolldown/plugin-babel'
 import tailwindcss from '@tailwindcss/vite'
 
 const config = defineConfig({
+  envPrefix: ['VITE_', 'SERVER_BASE_URL'],
   resolve: { tsconfigPaths: true },
   plugins: [
     devtools(),

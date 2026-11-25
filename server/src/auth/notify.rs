@@ -1,5 +1,4 @@
-//! Delivers one-time codes (phone through Twilio Verify v2, email through Resend) and ride texts
-//! (Twilio Programmable Messaging, see [send_text]).
+//! Delivers one-time codes: Phone verification through Twilio Verify v2, Email OTP through Resend.
 
 use serde_json::json;
 
@@ -114,37 +113,3 @@ pub async fn send_email_otp(st: &AppState, to: &str, code: &str) -> Result<(), A
     Ok(())
 }
 
-/// Sends a plain SMS through a Twilio Messaging Service (TWILIO_MESSAGING_SERVICE_SID). Used for
-/// ride texts to someone a rider booked for. Returns false when it was not sent (not configured,
-/// dev mode, or Twilio refused); callers treat texts as best effort.
-pub async fn send_text(st: &AppState, to: &str, body: &str) -> bool {
-    let (Some(twilio), Some(service)) = (st.cfg.twilio.as_ref(), st.cfg.twilio_messaging_service_sid.as_deref()) else {
-        tracing::info!(to, body, "ride text not sent: TWILIO_MESSAGING_SERVICE_SID not configured");
-        return false;
-    };
-    if st.cfg.otp_dev_log {
-        tracing::warn!(to, body, "DEV ride text (not sent, OTP_DEV_LOG=true)");
-        return false;
-    }
-    let url = format!("https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json", twilio.account_sid);
-    let resp = st
-        .http
-        .post(url)
-        .basic_auth(&twilio.account_sid, Some(&twilio.auth_token))
-        .form(&[("To", to), ("MessagingServiceSid", service), ("Body", body)])
-        .send()
-        .await;
-    match resp {
-        Ok(r) if r.status().is_success() => true,
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            tracing::error!(%status, body = %text, "twilio message rejected");
-            false
-        }
-        Err(err) => {
-            tracing::error!(error = ?err, "twilio message request failed");
-            false
-        }
-    }
-}

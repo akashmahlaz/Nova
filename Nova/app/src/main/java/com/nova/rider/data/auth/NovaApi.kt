@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -50,6 +51,8 @@ data class AppNotification(
     val title: String,
     val body: String = "",
     @SerialName("ride_id") val rideId: String? = null,
+    /** Set when the ride was booked for this rider by someone else: opens TrackRide. */
+    @SerialName("share_token") val shareToken: String? = null,
     @SerialName("read_at") val readAt: String? = null,
     @SerialName("created_at") val createdAt: String,
 )
@@ -138,8 +141,9 @@ data class RideStop(val name: String, val lat: Double, val lng: Double) {
     val point: GeoPoint get() = GeoPoint(lat, lng)
 }
 
+/** Who a ride is for. [onNova] (server-set): they have a Nova account and got the ride in their app. */
 @Serializable
-data class Passenger(val name: String, val phone: String)
+data class Passenger(val name: String, val phone: String, @SerialName("on_nova") val onNova: Boolean = false)
 
 /**
  * A booked ride as stored by the server. [status] is one of: scheduled, requested, accepted,
@@ -156,13 +160,22 @@ data class Ride(
     @SerialName("distance_meters") val distanceMeters: Long,
     @SerialName("duration_seconds") val durationSeconds: Long,
     val polyline: String = "",
+    /** Public live-tracking link: opens Nova if installed, the web page otherwise. */
+    @SerialName("track_url") val trackUrl: String = "",
     val pickup: RidePlace,
     val dropoff: RidePlace,
     val stops: List<RideStop> = emptyList(),
     @SerialName("payment_method") val paymentMethod: String,
     val passenger: Passenger? = null,
+    /** Set once a driver accepts (live [RideDriver.location] while the ride is active). */
+    val driver: RideDriver? = null,
+    /** 4-digit code the rider tells the driver at pickup. Only while the ride is active. */
+    @SerialName("trip_pin") val tripPin: String? = null,
     @SerialName("scheduled_at") val scheduledAt: String? = null,
     @SerialName("requested_at") val requestedAt: String? = null,
+    @SerialName("accepted_at") val acceptedAt: String? = null,
+    @SerialName("arrived_at") val arrivedAt: String? = null,
+    @SerialName("started_at") val startedAt: String? = null,
     @SerialName("ended_at") val endedAt: String? = null,
     @SerialName("cancel_reason") val cancelReason: String? = null,
     @SerialName("created_at") val createdAt: String,
@@ -170,6 +183,38 @@ data class Ride(
     /** Waiting for or riding with a driver (one at a time per rider). */
     val isActive: Boolean get() = status in setOf("requested", "accepted", "arriving", "in_progress")
 }
+
+@Serializable
+data class RideVehicle(val make: String, val model: String, val color: String, val plate: String) {
+    /** "White Toyota Prius". */
+    val label: String get() = "$color $make $model"
+}
+
+/** The driver on a ride, as the rider sees them. */
+@Serializable
+data class RideDriver(
+    @SerialName("first_name") val firstName: String,
+    val phone: String? = null,
+    val vehicle: RideVehicle,
+    val location: GeoPoint? = null,
+) {
+    val initials: String get() = firstName.trim().take(1).uppercase().ifEmpty { "D" }
+}
+
+/** A ride someone else booked with this rider as the passenger (read-only for them). */
+@Serializable
+data class RideForMe(
+    val id: String,
+    val status: String,
+    @SerialName("product_name") val productName: String,
+    @SerialName("booker_name") val bookerName: String,
+    @SerialName("pickup_name") val pickupName: String,
+    @SerialName("dropoff_name") val dropoffName: String,
+    @SerialName("scheduled_at") val scheduledAt: String? = null,
+    @SerialName("requested_at") val requestedAt: String? = null,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("share_token") val shareToken: String,
+)
 
 data class SendOtpResult(val destinationHint: String, val resendIn: Int)
 
@@ -473,15 +518,123 @@ object NovaApi {
         json.decodeFromJsonElement(ListSerializer(Ride.serializer()), res.getValue("rides"))
     }
 
+    /** Rides other people booked for this rider (last 30 days, newest first). */
+    suspend fun ridesForMe(): List<RideForMe> = withContext(Dispatchers.IO) {
+        val res = requestAuth("GET", "/v1/rides/for-me", null)
+        json.decodeFromJsonElement(ListSerializer(RideForMe.serializer()), res.getValue("rides"))
+    }
+
     /** People this rider booked for before, most recent first. */
     suspend fun recentPassengers(): List<Passenger> = withContext(Dispatchers.IO) {
         val res = requestAuth("GET", "/v1/rides/passengers", null)
         json.decodeFromJsonElement(ListSerializer(Passenger.serializer()), res.getValue("passengers"))
     }
 
+    /** Of these contact-number hashes (SHA-256 of E.164), the ones that are Nova riders. */
+    suspend fun matchContacts(hashes: List<String>): List<String> = withContext(Dispatchers.IO) {
+        val body = buildJsonObject { put("hashes", kotlinx.serialization.json.JsonArray(hashes.map { kotlinx.serialization.json.JsonPrimitive(it) })) }
+        val res = requestAuth("POST", "/v1/contacts/match", body)
+        json.decodeFromJsonElement(ListSerializer(String.serializer()), res.getValue("on_nova"))
+    }
+
     suspend fun cancelRide(id: String, reason: String? = null): Ride = withContext(Dispatchers.IO) {
         val body = buildJsonObject { reason?.let { put("reason", it) } }
         json.decodeFromJsonElement(Ride.serializer(), requestAuth("POST", "/v1/rides/${encode(id)}/cancel", body))
+    }
+
+    @Serializable
+    data class TrackedRide(
+        val status: String,
+        @SerialName("product_name") val productName: String,
+        @SerialName("booker_name") val bookerName: String,
+        @SerialName("passenger_name") val passengerName: String? = null,
+        val pickup: RidePlace,
+        val dropoff: RidePlace,
+        val stops: List<RideStop> = emptyList(),
+        val polyline: String = "",
+        @SerialName("distance_meters") val distanceMeters: Long = 0,
+        @SerialName("duration_seconds") val durationSeconds: Long = 0,
+        @SerialName("scheduled_at") val scheduledAt: String? = null,
+        @SerialName("requested_at") val requestedAt: String? = null,
+        @SerialName("ended_at") val endedAt: String? = null,
+    )
+
+    /** Public ride-tracking lookup for "For someone" SMS App Links (works even before sign-in). */
+    suspend fun trackRide(token: String): TrackedRide = withContext(Dispatchers.IO) {
+        val res = executeRequest("GET", "/v1/track/${encode(token)}", null, bearerToken = null).jsonObject
+        json.decodeFromJsonElement(TrackedRide.serializer(), res)
+    }
+
+    // ---------- signed S3 media ----------
+
+    @Serializable
+    data class PresignUploadRes(
+        @SerialName("media_id") val mediaId: String,
+        val bucket: String,
+        @SerialName("object_key") val objectKey: String,
+        @SerialName("upload_url") val uploadUrl: String,
+        @SerialName("expires_in") val expiresIn: Long,
+    )
+
+    @Serializable
+    data class MediaItem(
+        val id: String,
+        @SerialName("object_key") val objectKey: String,
+        val category: String,
+        @SerialName("file_name") val fileName: String,
+        @SerialName("content_type") val contentType: String,
+        @SerialName("size_bytes") val sizeBytes: Long,
+        val status: String,
+        @SerialName("rejection_reason") val rejectionReason: String? = null,
+        @SerialName("view_url") val viewUrl: String,
+        @SerialName("created_at") val createdAt: String,
+    )
+
+    suspend fun uploadMedia(
+        category: String,
+        contentType: String,
+        fileName: String,
+        bytes: ByteArray,
+    ): MediaItem = withContext(Dispatchers.IO) {
+        val presign = json.decodeFromJsonElement(
+            PresignUploadRes.serializer(),
+            requestAuth(
+                "POST",
+                "/v1/media/presign-upload",
+                buildJsonObject {
+                    put("category", category)
+                    put("content_type", contentType)
+                    put("file_name", fileName)
+                },
+            ),
+        )
+        val conn = (URL(presign.uploadUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "PUT"
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            doOutput = true
+            setRequestProperty("Content-Type", contentType)
+            setFixedLengthStreamingMode(bytes.size)
+        }
+        try {
+            conn.outputStream.use { it.write(bytes) }
+            if (conn.responseCode !in 200..299) {
+                throw ApiException("s3_upload_failed_${conn.responseCode}")
+            }
+        } finally {
+            conn.disconnect()
+        }
+        json.decodeFromJsonElement(
+            MediaItem.serializer(),
+            requestAuth("POST", "/v1/media/${encode(presign.mediaId)}/confirm", null),
+        )
+    }
+
+    suspend fun listMyMedia(): List<MediaItem> = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(MediaItem.serializer()),
+            requestAuthElement("GET", "/v1/media/mine", null),
+        )
     }
 
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8)

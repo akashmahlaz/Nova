@@ -24,10 +24,22 @@ pub struct Config {
     /// Keep it separate from the Android key and restrict it to this server's IP + those 3 APIs.
     /// `None` makes the /v1/geo and /v1/rides/quote endpoints return 503 `maps_unavailable`.
     pub google_maps_api_key: Option<String>,
-    /// Twilio Programmable Messaging service for ride texts ("Akash booked you a ride"). Verify
-    /// (used for codes) can't send custom text, so this is a separate, optional service.
-    /// `None`: ride texts are skipped and logged.
-    pub twilio_messaging_service_sid: Option<String>,
+    /// Public web origin for shareable links (ride tracking: `{public_web_url}/track/<token>`).
+    /// Must match the App Link host in the Android manifest so links open the app when installed.
+    pub public_web_url: String,
+    /// Development only: new driver applications are approved at once instead of waiting for
+    /// an admin (`PATCH /v1/admin/drivers/{id}`). Never enable in production.
+    pub driver_auto_approve: bool,
+    /// Private AWS S3 bucket for signed media uploads/downloads across Rider, Driver, and Admin.
+    pub s3: Option<S3Config>,
+}
+
+#[derive(Clone)]
+pub struct S3Config {
+    pub bucket: String,
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
 }
 
 #[derive(Clone)]
@@ -92,7 +104,22 @@ impl Config {
             passkey_assetlinks_fingerprint: optional("PASSKEY_ASSETLINKS_FINGERPRINT")
                 .unwrap_or_default(),
             google_maps_api_key: optional("GOOGLE_MAPS_API_KEY"),
-            twilio_messaging_service_sid: optional("TWILIO_MESSAGING_SERVICE_SID"),
+            public_web_url: optional("PUBLIC_WEB_URL")
+                .unwrap_or_else(|| "https://nova-web-production.punjab.fireclaw.in".into())
+                .trim_end_matches('/')
+                .to_string(),
+            driver_auto_approve: optional("DRIVER_AUTO_APPROVE").is_some_and(|v| v == "true"),
+            s3: match (
+                optional("AWS_S3_BUCKET"),
+                optional("AWS_REGION"),
+                optional("AWS_ACCESS_KEY_ID"),
+                optional("AWS_SECRET_ACCESS_KEY"),
+            ) {
+                (Some(bucket), Some(region), Some(access_key_id), Some(secret_access_key)) => {
+                    Some(S3Config { bucket, region, access_key_id, secret_access_key })
+                }
+                _ => None,
+            },
         })
     }
 }

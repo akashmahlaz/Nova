@@ -79,6 +79,7 @@ object AuthStore {
         com.nova.rider.data.profile.ProfileStore.clear()
         com.nova.rider.data.trip.TripStore.clear()
         com.nova.rider.data.settings.SettingsStore.clearAccountData()
+        com.nova.rider.data.contacts.ContactsStore.clear()
     }
 
     private fun loadSession(store: SharedPreferences): Session? {

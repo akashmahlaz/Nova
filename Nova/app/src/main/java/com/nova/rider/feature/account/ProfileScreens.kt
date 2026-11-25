@@ -795,6 +795,7 @@ private fun noticeStyle(n: com.nova.rider.data.auth.AppNotification): Triple<Ima
         "ride_scheduled" -> Triple(NovaIcons.Calendar, c.tertiaryContainer, c.onTertiaryContainer)
         "ride_cancelled" -> Triple(NovaIcons.Close, c.surfaceContainerHigh, c.onSurface)
         "no_drivers" -> Triple(NovaIcons.Car, c.secondaryContainer, c.onSecondaryContainer)
+        "booked_for_you" -> Triple(NovaIcons.People, c.primaryContainer, c.onPrimaryContainer)
         "receipt" -> Triple(NovaIcons.ReceiptFilled, c.primaryContainer, c.onPrimaryContainer)
         else -> if (n.kind == "offer") Triple(NovaIcons.Tag, NovaPalette.Mint, NovaPalette.OnMint)
         else Triple(NovaIcons.Bell, c.surfaceContainerHigh, c.onSurface)
@@ -867,7 +868,12 @@ fun NotificationsScreen(nav: Navigator) {
                                 leading = { IconTile(icon, bg, fg, size = 44.dp, radius = 16.dp) },
                                 trailing = if (n.readAt == null) { { Box(Modifier.size(10.dp).clip(CircleShape).background(c.primary).semantics { contentDescription = "Unread" }) } } else null,
                                 // Trip notifications open Activity, where the ride is listed.
-                                onClick = if (n.rideId != null) ({ nav.tab(RiderTab.Activity) }) else null,
+                                // A ride booked for me opens its live tracking; my own rides open Activity.
+                                onClick = when {
+                                    n.shareToken != null -> ({ nav.go(com.nova.rider.navigation.TrackRide(n.shareToken)) })
+                                    n.rideId != null -> ({ nav.tab(RiderTab.Activity) })
+                                    else -> null
+                                },
                             )
                         }
                     }

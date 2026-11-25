@@ -391,3 +391,10 @@ fun CountdownRing(progress: Float, size: Dp, stroke: Dp, color: Color, track: Co
 fun dial(context: android.content.Context, number: String) {
     context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number")))
 }
+
+/** Turn-by-turn in Google Maps (or any maps app) until in-app navigation exists. */
+fun navigateTo(context: android.content.Context, lat: Double, lng: Double) {
+    val nav = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.navigation:q=$lat,$lng"))
+    val any = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$lat,$lng?q=$lat,$lng"))
+    runCatching { context.startActivity(nav) }.recoverCatching { context.startActivity(any) }
+}

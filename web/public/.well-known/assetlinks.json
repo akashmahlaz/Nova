@@ -1,0 +1,28 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.nova.kiwiriders",
+      "sha256_cert_fingerprints": [
+        "65:00:7F:60:8A:9B:EE:5C:8A:A1:D0:2D:AC:9A:93:DA:29:2C:C2:13:E2:4F:6B:46:3D:56:49:07:3D:45:B9:6A"
+      ]
+    }
+  },
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.nova.rider",
+      "sha256_cert_fingerprints": [
+        "65:00:7F:60:8A:9B:EE:5C:8A:A1:D0:2D:AC:9A:93:DA:29:2C:C2:13:E2:4F:6B:46:3D:56:49:07:3D:45:B9:6A"
+      ]
+    }
+  }
+]

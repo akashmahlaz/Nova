@@ -76,12 +76,12 @@ fun MapLabel(text: String, modifier: Modifier = Modifier, radius: Dp = 10.dp, he
 
 /** Driver identity row used across trip screens. */
 @Composable
-fun DriverRow(modifier: Modifier = Modifier, trailing: @Composable () -> Unit = {}) {
+fun DriverRow(modifier: Modifier = Modifier, driver: com.nova.rider.data.auth.RideDriver? = null, trailing: @Composable () -> Unit = {}) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        CookieAvatar(Sample.driverInitials, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, size = 44.dp)
+        CookieAvatar(driver?.initials ?: Sample.driverInitials, MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, size = 44.dp)
         Column(Modifier.weight(1f)) {
-            Text("${Sample.driverName} · ★ ${Sample.driverRating}", style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp))
-            Text("${Sample.carShort} · ${Sample.plate}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(driver?.firstName ?: "${Sample.driverName} · ★ ${Sample.driverRating}", style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp))
+            Text(driver?.let { "${it.vehicle.label} · ${it.vehicle.plate}" } ?: "${Sample.carShort} · ${Sample.plate}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         }
         trailing()
     }

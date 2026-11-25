@@ -7,9 +7,17 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.nova.driver.data.DriverStore
+import com.nova.driver.data.auth.AuthStore
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.entryProvider
@@ -22,11 +30,40 @@ import com.nova.driver.feature.onboard.*
 import com.nova.driver.feature.shift.*
 import com.nova.driver.navigation.*
 
+private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+
+/** Debug builds reach the dev API on the Mac's LAN address; targetSdk 37 needs this runtime grant. */
+@Composable
+private fun EnsureLocalNetworkAccess() {
+    if (!BuildConfig.DEBUG) return
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(context, LOCAL_NETWORK_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            launcher.launch(LOCAL_NETWORK_PERMISSION)
+        }
+    }
+}
+
 /** Root of the driver app: one Navigation 3 back stack and one entry per screen. */
 @Composable
 fun NovaDriverApp() {
+    val context = LocalContext.current
+    remember(context) {
+        AuthStore.init(context)
+        DriverStore.init(context)
+    }
+    EnsureLocalNetworkAccess()
     val backStack = rememberNavBackStack(Splash)
     val nav = remember(backStack) { Navigator(backStack) }
+    // The rider cancelled the trip in progress: tell the driver wherever they are.
+    LaunchedEffect(DriverStore.cancelledRider) {
+        if (DriverStore.cancelledRider != null) nav.reset(RiderCancelled)
+    }
+    // Signed out (refresh token revoked or expired): back to the start.
+    LaunchedEffect(AuthStore.session == null) {
+        if (AuthStore.session == null && backStack.lastOrNull() !in setOf(Splash, Welcome, SignUp, Login, Otp, Help)) nav.reset(Welcome)
+    }
     val spatial = MaterialTheme.motionScheme.defaultSpatialSpec<IntOffset>()
     val effects = MaterialTheme.motionScheme.defaultEffectsSpec<Float>()
     NavDisplay(

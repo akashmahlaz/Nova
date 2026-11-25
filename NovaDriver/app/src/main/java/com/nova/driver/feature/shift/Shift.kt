@@ -1,5 +1,15 @@
 package com.nova.driver.feature.shift
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.nova.driver.data.DriverStore
+import com.nova.driver.data.formatKm
+import com.nova.driver.data.formatMinutes
+import com.nova.driver.data.formatMoney
+import com.nova.driver.data.api.ApiException
+import com.nova.driver.data.api.errorMessage
+
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -123,13 +133,34 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    val me = DriverStore.me
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { if (DriverStore.me == null) runCatching { DriverStore.refreshMe() } }
+    // A trip still in progress (e.g. after reopening the app) comes first.
+    LaunchedEffect(DriverStore.state.ride?.id) { DriverStore.rideRoute(DriverStore.state.ride)?.let(nav::go) }
+    val goOnline = {
+        scope.launch {
+            busy = true; error = null
+            runCatching { DriverStore.goOnline() }
+                .onSuccess { nav.go(Online) }
+                .onFailure { error = errorMessage(it) }
+            busy = false
+        }
+        Unit
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.any { it }) goOnline() else error = "Nova needs your location to send you nearby trips."
+    }
     Box(Modifier.fillMaxSize().background(c.surface)) {
         MapBackdrop(Modifier.fillMaxWidth().height(440.dp)) { userDot(196f, 360f, c.outline) }
         Row(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Surface(onClick = { nav.go(Inbox) }, shape = CircleShape, color = c.surfaceContainerHigh, modifier = Modifier.height(56.dp)) {
                 Row(Modifier.padding(start = 6.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    CookieAvatar(Driver.initials, c.secondaryContainer, NovaPalette.OnCobaltContainer, size = 44.dp)
-                    Text("★ ${Driver.rating}", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    CookieAvatar(me?.user?.initials ?: "", c.secondaryContainer, NovaPalette.OnCobaltContainer, size = 44.dp)
+                    // Ratings start after the first rated trips.
+                    Text("New driver", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
             Spacer(Modifier.weight(1f))
@@ -141,7 +172,7 @@ fun HomeScreen(nav: Navigator) {
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)).background(c.surfaceContainer)) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.padding(horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Kia ora, ${Driver.firstName}", fontSize = 15.sp, color = c.onSurfaceVariant)
+                    Text(me?.user?.firstName?.let { "Kia ora, $it" } ?: "Kia ora", fontSize = 15.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     Text("Ready when you are.", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -160,8 +191,13 @@ fun HomeScreen(nav: Navigator) {
                         }
                     }
                 }
+                ShiftError(error)
                 NovaButton(
-                    "Go online", onClick = { nav.go(Online) }, height = 136.dp, leadingIcon = NovaIcons.Power,
+                    if (busy) "Going online…" else "Go online", enabled = !busy, height = 136.dp, leadingIcon = NovaIcons.Power,
+                    onClick = {
+                        if (DriverStore.hasLocationPermission()) goOnline()
+                        else permission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    },
                     textStyle = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, letterSpacing = (-0.5).sp),
                     modifier = Modifier.shadow(20.dp, CircleShape, ambientColor = NovaTheme.colors.cta, spotColor = NovaTheme.colors.cta),
                 )
@@ -176,8 +212,12 @@ fun OnlineScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var heatmap by rememberSaveable { mutableStateOf(true) }
     var filter by rememberSaveable { mutableStateOf(false) }
-    // Simulates the backend pushing a trip request over the websocket.
-    LaunchedEffect(Unit) { delay(5000); nav.go(Request) }
+    val scope = rememberCoroutineScope()
+    // A request arrives over the live socket (or the fallback poll) into DriverStore.state.
+    LaunchedEffect(DriverStore.state.offer?.offerId) { if (DriverStore.state.offer != null) nav.go(Request) }
+    LaunchedEffect(DriverStore.state.ride?.id) { DriverStore.rideRoute(DriverStore.state.ride)?.let(nav::replaceTop) }
+    // Server says we're offline (heartbeats missed, account paused): don't pretend otherwise.
+    LaunchedEffect(DriverStore.state.online) { if (!DriverStore.state.online && DriverStore.state.ride == null) nav.popTo(Home) }
     val pulse = rememberInfiniteTransition(label = "pulse")
     val t by pulse.animateFloat(0f, 1f, infiniteRepeatable(tween(2000, easing = LinearEasing)), label = "t")
     val heat = Color(0xFFFF8A65)
@@ -194,7 +234,7 @@ fun OnlineScreen(nav: Navigator) {
         }
         Box(Modifier.align(Alignment.TopStart).padding(start = 160.dp, top = 290.dp).size(72.dp).graphicsLayer { val s = 0.6f + 0.8f * t; scaleX = s; scaleY = s; alpha = 0.5f * (1f - t) }.clip(CircleShape).background(NovaTheme.colors.cta))
         Row(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OnlinePill(online = true, onClick = { nav.popTo(Home) })
+            OnlinePill(online = true, onClick = { scope.launch { runCatching { DriverStore.goOffline() }; nav.popTo(Home) } })
             Spacer(Modifier.weight(1f))
             TodayChip()
         }
@@ -207,14 +247,14 @@ fun OnlineScreen(nav: Navigator) {
             ) { Icon(NovaIcons.Flame, "Show demand heatmap") }
         }
         Surface(
-            onClick = { nav.go(Request) }, shape = RoundedCornerShape(32.dp), color = c.surfaceContainer, shadowElevation = 8.dp,
+            shape = RoundedCornerShape(32.dp), color = c.surfaceContainer, shadowElevation = 8.dp,
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 32.dp).fillMaxWidth(),
         ) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.size(64.dp).clip(CircleShape).background(c.primaryContainer), contentAlignment = Alignment.Center) { LoadingIndicator(Modifier.size(48.dp), color = c.primary) }
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Finding trips…", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Head toward Viaduct Harbour for 1.5× fares", fontSize = 14.sp, color = c.onSurfaceVariant)
+                    Text("Requests near you appear here. Keep Nova open.", fontSize = 14.sp, color = c.onSurfaceVariant)
                 }
             }
         }
@@ -232,11 +272,29 @@ private fun SurgeTag(text: String, bg: Color, modifier: Modifier) {
 fun RequestScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val water = NovaTheme.colors.mapWater
+    val scope = rememberCoroutineScope()
+    val offer = DriverStore.state.offer
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     val total = 15
-    var left by rememberSaveable { mutableIntStateOf(12) }
-    LaunchedEffect(Unit) {
+    // Time left comes from the server (expires_in_ms), so the phone's clock can't cheat it.
+    var left by remember(offer?.offerId) { mutableIntStateOf(((offer?.expiresInMs ?: 0L) / 1000).toInt().coerceIn(0, total)) }
+    LaunchedEffect(offer?.offerId) {
+        if (offer == null) { nav.replaceTop(Online); return@LaunchedEffect } // taken back or answered elsewhere
         while (left > 0) { delay(1000); left-- }
+        DriverStore.dropOffer(offer.offerId)
         nav.replaceTop(Online) // timed out → keep looking
+    }
+    if (offer == null) return
+    val accept = {
+        scope.launch {
+            busy = true; error = null
+            runCatching { DriverStore.accept() }
+                .onSuccess { nav.replaceTop(ToPickup) }
+                .onFailure { error = errorMessage(it) }
+            busy = false
+        }
+        Unit
     }
     Box(Modifier.fillMaxSize()) {
         MapBackdrop {
@@ -252,10 +310,13 @@ fun RequestScreen(nav: Navigator) {
         DriverSheet(Modifier.align(Alignment.BottomCenter).semantics { contentDescription = "New ride request" }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("NEW REQUEST · COMFORT", fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, color = c.primary)
-                    Text(CurrentTrip.fare, fontSize = 64.sp, lineHeight = 66.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1).sp)
+                    Text("NEW REQUEST · ${offer.productName.uppercase()}", fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, color = c.primary)
+                    Text(formatMoney(offer.fareCents, offer.currency), fontSize = 56.sp, lineHeight = 60.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1).sp, maxLines = 1)
                     Text(
-                        buildAnnotatedString { append("Card · 9.8 km · ~28 min · "); withStyle(SpanStyle(color = c.tertiary, fontWeight = FontWeight.Bold)) { append("1.3× demand") } },
+                        buildAnnotatedString {
+                            append("${paymentLabel(offer.paymentMethod)} · ${formatKm(offer.distanceMeters)} · ~${formatMinutes(offer.durationSeconds)}")
+                            if (offer.stopCount > 0) withStyle(SpanStyle(color = c.tertiary, fontWeight = FontWeight.Bold)) { append(" · ${offer.stopCount} stop${if (offer.stopCount > 1) "s" else ""}") }
+                        },
                         fontSize = 14.sp, color = c.onSurfaceVariant,
                     )
                 }
@@ -265,24 +326,25 @@ fun RequestScreen(nav: Navigator) {
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(Modifier.fillMaxWidth().clip(groupShape(0, 2)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Text("4m", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = NovaTheme.colors.onCta) }
-                    Column { Text("Pickup · 1.2 km", fontSize = 13.sp, color = c.onSurfaceVariant); Text(CurrentTrip.pickup, fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+                    Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Text("${etaMinutes(offer.pickupDistanceMeters)}m", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = NovaTheme.colors.onCta) }
+                    Column { Text("Pickup · ${formatKm(offer.pickupDistanceMeters)} away", fontSize = 13.sp, color = c.onSurfaceVariant); Text(offer.pickup.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2) }
                 }
                 Row(Modifier.fillMaxWidth().clip(groupShape(1, 2)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     IconTile(NovaIcons.FlagFilled, c.onSurface, c.surface, radius = 12.dp)
-                    Column { Text("Drop-off", fontSize = 13.sp, color = c.onSurfaceVariant); Text(CurrentTrip.dropoff, fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+                    Column { Text("Drop-off", fontSize = 13.sp, color = c.onSurfaceVariant); Text(offer.dropoff.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2) }
                 }
             }
             Text(
-                buildAnnotatedString { withStyle(SpanStyle(color = c.onSurface, fontWeight = FontWeight.Bold)) { append(CurrentTrip.rider) }; append(" · ★ ${CurrentTrip.riderRating} · ${CurrentTrip.riderRides} rides") },
+                buildAnnotatedString { withStyle(SpanStyle(color = c.onSurface, fontWeight = FontWeight.Bold)) { append(offer.riderName) } },
                 fontSize = 14.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp),
             )
-            NovaButton("Accept", onClick = { nav.replaceTop(ToPickup) }, height = 96.dp, leadingIcon = NovaIcons.Check, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 26.sp, letterSpacing = (-0.3).sp))
+            ShiftError(error)
+            NovaButton(if (busy) "Accepting…" else "Accept", onClick = accept, enabled = !busy, height = 96.dp, leadingIcon = NovaIcons.Check, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 26.sp, letterSpacing = (-0.3).sp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Surface(onClick = { nav.replaceTop(Online) }, shape = RoundedCornerShape(16.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(56.dp)) {
+                Surface(onClick = { scope.launch { DriverStore.decline(); nav.replaceTop(Online) } }, enabled = !busy, shape = RoundedCornerShape(16.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(56.dp)) {
                     Box(contentAlignment = Alignment.Center) { Text("Decline", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
                 }
-                Surface(onClick = { nav.reset(Home) }, shape = RoundedCornerShape(16.dp), color = Color.Transparent, border = BorderStroke(1.dp, c.outline), modifier = Modifier.weight(1f).height(56.dp)) {
+                Surface(onClick = { scope.launch { DriverStore.decline(); runCatching { DriverStore.goOffline() }; nav.reset(Home) } }, enabled = !busy, shape = RoundedCornerShape(16.dp), color = Color.Transparent, border = BorderStroke(1.dp, c.outline), modifier = Modifier.weight(1f).height(56.dp)) {
                     Box(contentAlignment = Alignment.Center) { Text("Pause requests", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
                 }
             }
@@ -306,35 +368,52 @@ fun PickupMap(dimmed: Boolean = false) {
 fun ToPickupScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var muted by rememberSaveable { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val ride = DriverStore.state.ride ?: run { LaunchedEffect(Unit) { nav.goOnline() }; return }
+    val rider = firstName(ride.riderName)
     Box(Modifier.fillMaxSize()) {
         PickupMap()
-        TurnCard("250 m", "Turn left onto Great South Rd", "Then right in 600 m · Ponsonby Rd", Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 8.dp))
+        // Turn-by-turn comes with in-app navigation; until then the card names where to go.
+        TurnCard(formatKm(ride.distanceMeters), "Pickup: ${ride.pickup.name}", ride.pickup.address.ifBlank { "Open Maps for directions" }, Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 8.dp))
         MapTools(Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).offset(y = (-40).dp)) {
-            FilledIconButton(onClick = {}, colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.onSurface, contentColor = c.surface)) { Icon(NovaIcons.Nav, "Recenter") }
+            FilledIconButton(onClick = { navigateTo(context, ride.pickup.lat, ride.pickup.lng) }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.onSurface, contentColor = c.surface)) { Icon(NovaIcons.Nav, "Navigate to pickup") }
             androidx.compose.material3.IconToggleButton(checked = muted, onCheckedChange = { muted = it }) { Icon(if (muted) NovaIcons.Micoff else NovaIcons.Volume, "Mute voice guidance") }
             IconButton(onClick = { nav.go(Help) }) { Icon(NovaIcons.Warning, "Report road issue") }
         }
         DriverSheet(Modifier.align(Alignment.BottomCenter), top = 20.dp) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                CookieAvatar(CurrentTrip.riderInitials, c.secondaryContainer, c.onSecondaryContainer, size = 52.dp)
+                CookieAvatar(ride.riderInitials, c.secondaryContainer, c.onSecondaryContainer, size = 52.dp)
                 Column {
-                    Text("Picking up ${CurrentTrip.rider}", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Text("3 min · 1.0 km · Ponsonby Rd", fontSize = 14.sp, color = c.onSurfaceVariant)
+                    Text("Picking up $rider", fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    Text(
+                        listOfNotNull(ride.productName, ride.bookedBy?.let { "booked by $it" }, ride.pickup.name).joinToString(" · "),
+                        fontSize = 14.sp, color = c.onSurfaceVariant, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
                 }
             }
             Row(Modifier.semantics { contentDescription = "Contact rider" }, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                ConnectedButton("Call", 0, 3, onClick = { dial(context, "+6421000000") }, icon = NovaIcons.Phone)
+                ConnectedButton("Call", 0, 3, onClick = { ride.riderPhone?.let { dial(context, it) } ?: run { error = "No number for this rider." } }, icon = NovaIcons.Phone)
                 ConnectedButton("Chat", 1, 3, onClick = { nav.go(Chat) }, icon = NovaIcons.Msg)
                 ConnectedButton(null, 2, 3, onClick = { nav.go(CancelTrip) }, icon = NovaIcons.Dots, iconDescription = "More options", fixedWidth = 64.dp)
             }
+            ShiftError(error)
             Surface(
-                onClick = { nav.replaceTop(Arrived) }, shape = RoundedCornerShape(28.dp), color = NovaTheme.colors.cta, contentColor = NovaTheme.colors.onCta,
+                onClick = {
+                    scope.launch {
+                        busy = true; error = null
+                        runCatching { DriverStore.arrived() }.onSuccess { nav.replaceTop(Arrived) }.onFailure { error = errorMessage(it) }
+                        busy = false
+                    }
+                },
+                enabled = !busy, shape = RoundedCornerShape(28.dp), color = NovaTheme.colors.cta, contentColor = NovaTheme.colors.onCta,
                 modifier = Modifier.fillMaxWidth().height(96.dp),
             ) {
                 Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                     Icon(NovaIcons.Pin, null, Modifier.size(26.dp)); Spacer(Modifier.width(10.dp))
-                    Text("I've arrived", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                    Text(if (busy) "Letting $rider know…" else "I've arrived", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
                 }
             }
         }
@@ -347,27 +426,29 @@ private data class ChatMsg(val me: Boolean, val text: String)
 fun ChatScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
-    val msgs = remember { mutableStateListOf(ChatMsg(true, "Kia ora Priya, I’m 2 min away"), ChatMsg(false, "Thanks! I’m by the blue door next to the café")) }
+    val ride = DriverStore.state.ride
+    val rider = firstName(ride?.riderName ?: "")
+    val msgs = remember { mutableStateListOf<ChatMsg>() }
     var readAloud by rememberSaveable { mutableStateOf(true) }
     val list = rememberLazyListState()
-    LaunchedEffect(msgs.size) { list.animateScrollToItem(msgs.lastIndex) }
+    LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.lastIndex) }
     Column(Modifier.fillMaxSize().background(c.surface)) {
         Row(
             Modifier.fillMaxWidth().background(c.surfaceContainerLow).statusBarsPadding().padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
-            CookieAvatar(CurrentTrip.riderInitials, c.secondaryContainer, c.onSecondaryContainer, size = 44.dp)
+            CookieAvatar(ride?.riderInitials ?: "", c.secondaryContainer, c.onSecondaryContainer, size = 44.dp)
             Column(Modifier.weight(1f)) {
-                Text(CurrentTrip.rider, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Pickup · 12 Ponsonby Rd", fontSize = 13.sp, color = c.onSurfaceVariant)
+                Text(rider, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                Text("Pickup · ${ride?.pickup?.name ?: ""}", fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1)
             }
             FilledIconButton(
-                onClick = { dial(context, "+6421000000") },
+                onClick = { ride?.riderPhone?.let { dial(context, it) } },
                 shapes = IconButtonDefaults.shapes(RoundedCornerShape(16.dp), RoundedCornerShape(24.dp)),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = NovaTheme.colors.cta, contentColor = NovaTheme.colors.onCta),
                 modifier = Modifier.size(48.dp),
-            ) { Icon(NovaIcons.Phone, "Call ${CurrentTrip.rider}") }
+            ) { Icon(NovaIcons.Phone, "Call $rider") }
         }
         Row(
             Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.primaryContainer)
@@ -412,6 +493,8 @@ fun CancelTripScreen(nav: Navigator) {
     val scope = rememberCoroutineScope()
     val reasons = listOf("Rider asked me to cancel", "Too many passengers", "Pickup spot feels unsafe", "Vehicle problem", "Something else")
     var reason by rememberSaveable { mutableIntStateOf(-1) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     Box(Modifier.fillMaxSize()) {
         PickupMap()
         ModalBottomSheet(onDismissRequest = { nav.back() }, sheetState = sheet, containerColor = c.surface) {
@@ -419,7 +502,7 @@ fun CancelTripScreen(nav: Navigator) {
                 Text("Why are you cancelling?", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp))
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.tertiaryContainer).padding(horizontal = 14.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(NovaIcons.Info, null, tint = c.onTertiaryContainer)
-                    Text("Your cancellation rate is 3%. Safety reasons never count against you.", fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, color = c.onTertiaryContainer)
+                    Text("The rider is matched with another driver right away. Safety reasons never count against you.", fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, color = c.onTertiaryContainer)
                 }
                 Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     reasons.forEachIndexed { i, t ->
@@ -434,11 +517,23 @@ fun CancelTripScreen(nav: Navigator) {
                         }
                     }
                 }
-                Text("Rider didn't show up? Use no-show instead", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.padding(horizontal = 4.dp).clickable { nav.replaceTop(NoShow) })
+                if (DriverStore.state.ride?.status == "arriving") {
+                    Text("Rider didn't show up? Use no-show instead", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.padding(horizontal = 4.dp).clickable { nav.replaceTop(NoShow) })
+                }
+                ShiftError(error)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NovaButton("Keep trip", onClick = { scope.launch { sheet.hide() }.invokeOnCompletion { nav.back() } }, modifier = Modifier.weight(1f))
                     NovaButton(
-                        "Cancel trip", onClick = { nav.goOnline() }, modifier = Modifier.weight(1f), enabled = reason >= 0,
+                        if (busy) "Cancelling…" else "Cancel trip", modifier = Modifier.weight(1f), enabled = reason >= 0 && !busy,
+                        onClick = {
+                            scope.launch {
+                                busy = true; error = null
+                                runCatching { DriverStore.cancelRide(reasons[reason]) }
+                                    .onSuccess { if (DriverStore.state.online) nav.goOnline() else nav.reset(Home) }
+                                    .onFailure { error = errorMessage(it) }
+                                busy = false
+                            }
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = c.errorContainer, contentColor = c.onErrorContainer),
                     )
                 }
@@ -450,44 +545,61 @@ fun CancelTripScreen(nav: Navigator) {
 @Composable
 fun ArrivedScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var pin by rememberSaveable { mutableStateOf("48") }
-    var waitLeft by rememberSaveable { mutableIntStateOf(165) } // 2:45 of free wait
+    val scope = rememberCoroutineScope()
+    val ride = DriverStore.state.ride ?: run { LaunchedEffect(Unit) { nav.goOnline() }; return }
+    val rider = firstName(ride.riderName)
+    val freeWait = 180
+    var pin by rememberSaveable { mutableStateOf("") }
+    var waitLeft by remember { mutableIntStateOf((freeWait - secondsSince(ride.arrivedAt)).toInt().coerceIn(0, freeWait)) }
     LaunchedEffect(Unit) { while (waitLeft > 0) { delay(1000); waitLeft-- } }
+    var busy by remember { mutableStateOf(false) }
+    var ok by remember { mutableStateOf(false) }
+    var bad by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     val full = pin.length == 4
-    val ok = pin == CurrentTrip.pin
-    val bad = full && !ok
+    val startTrip = {
+        scope.launch {
+            busy = true; error = null
+            runCatching { DriverStore.start(pin) }
+                .onSuccess { ok = true; nav.replaceTop(OnTrip) }
+                .onFailure { e -> if ((e as? ApiException)?.code == "wrong_pin") bad = true else error = errorMessage(e) }
+            busy = false
+        }
+        Unit
+    }
     Column(
         Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(c.surfaceContainer).padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(48.dp).clip(CircleShape).background(c.surfaceContainerHighest), contentAlignment = Alignment.Center) { Text(CurrentTrip.riderInitials, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold) }
+            Box(Modifier.size(48.dp).clip(CircleShape).background(c.surfaceContainerHighest), contentAlignment = Alignment.Center) { Text(ride.riderInitials, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold) }
             Column(Modifier.weight(1f)) {
-                Text("Waiting for ${CurrentTrip.rider}", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Ponsonby Rd · she's been notified", fontSize = 13.sp, color = c.onSurfaceVariant)
+                Text("Waiting for $rider", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                Text("${ride.pickup.name} · they've been notified", fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1)
             }
-            CountdownRing(waitLeft / 165f, 64.dp, 5.dp, c.primary, c.surfaceContainerHighest) {
+            CountdownRing(waitLeft / freeWait.toFloat(), 64.dp, 5.dp, c.primary, c.surfaceContainerHighest) {
                 Text("%d:%02d".format(waitLeft / 60, waitLeft % 60), fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.semantics { contentDescription = "Free wait ${waitLeft / 60} minutes ${waitLeft % 60} seconds left" })
             }
         }
         Column(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Enter ${CurrentTrip.rider}'s trip PIN", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.4).sp)
+            Text("Enter $rider's trip PIN", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.4).sp)
             Row(Modifier.semantics { contentDescription = "Trip PIN" }, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 repeat(4) { i -> CodeBox(pin.getOrNull(i), active = i == pin.length, modifier = Modifier.width(64.dp), height = 76.dp, error = bad, success = ok, fontSize = 36) }
             }
             Text(
-                when { bad -> "That PIN doesn’t match. Ask ${CurrentTrip.rider} to check her app."; ok -> "PIN verified"; else -> "Ask the rider for the 4-digit PIN" },
+                when { bad -> "That PIN doesn’t match. Ask $rider to check their Nova app."; ok -> "PIN verified"; else -> "Ask the rider for the 4-digit PIN in their app" },
                 fontSize = 14.sp, fontWeight = FontWeight.Bold, color = when { bad -> c.error; ok -> c.primary; else -> c.onSurfaceVariant },
             )
         }
-        NumberPad(onDigit = { if (pin.length < 4) pin += it }, onDelete = { pin = pin.dropLast(1) }, onClear = { pin = "" }, keyHeight = 64.dp)
+        NumberPad(onDigit = { if (pin.length < 4) { pin += it; bad = false } }, onDelete = { pin = pin.dropLast(1); bad = false }, onClear = { pin = ""; bad = false }, keyHeight = 64.dp)
         Spacer(Modifier.weight(1f))
+        ShiftError(error)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Surface(onClick = { nav.go(NoShow) }, shape = RoundedCornerShape(24.dp), color = c.surfaceContainerHigh, modifier = Modifier.height(72.dp)) {
                 Box(Modifier.padding(horizontal = 20.dp), contentAlignment = Alignment.Center) { Text("No-show", fontSize = 15.sp, fontWeight = FontWeight.Bold) }
             }
             NovaButton(
-                "Start trip", onClick = { nav.replaceTop(OnTrip) }, enabled = ok, height = 72.dp, modifier = Modifier.weight(1f),
+                if (busy) "Checking…" else "Start trip", onClick = startTrip, enabled = full && !busy && !bad, height = 72.dp, modifier = Modifier.weight(1f),
                 textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, fontWeight = FontWeight.ExtraBold),
             )
         }
@@ -497,6 +609,16 @@ fun ArrivedScreen(nav: Navigator) {
 @Composable
 fun OnTripScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ride = DriverStore.state.ride ?: run { LaunchedEffect(Unit) { nav.goOnline() }; return }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    // Progress by time since pickup against the quoted duration (until live routing exists).
+    var elapsed by remember { mutableStateOf(secondsSince(ride.startedAt)) }
+    LaunchedEffect(Unit) { while (true) { delay(5_000); elapsed = secondsSince(ride.startedAt) } }
+    val remaining = (ride.durationSeconds - elapsed).coerceAtLeast(0)
+    val eta = remember(remaining / 60) { java.time.LocalTime.now().plusSeconds(remaining).format(java.time.format.DateTimeFormatter.ofPattern("H:mm")) }
     Box(Modifier.fillMaxSize()) {
         MapBackdrop {
             route("M196 640 L196 340 L300 330 L310 120", c.primary, 10f)
@@ -504,7 +626,7 @@ fun OnTripScreen(nav: Navigator) {
             halo(196f, 560f, 26f, c.primary, 0.18f)
             shape("M196 544 L208 574 L196 567 L184 574Z", c.primary)
         }
-        TurnCard("1.2 km", "Right onto Mount Wellington Hwy", "Destination on the left", Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp), turnRight = true)
+        TurnCard(formatKm(ride.distanceMeters), "Drop-off: ${ride.dropoff.name}", ride.dropoff.address.ifBlank { "Tap navigate for directions" }, Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp).clickable { navigateTo(context, ride.dropoff.lat, ride.dropoff.lng) }, turnRight = true)
         Column(Modifier.align(Alignment.BottomStart).fillMaxWidth()) {
             Surface(
                 onClick = { nav.go(SosActive) }, shape = RoundedCornerShape(22.dp), color = c.errorContainer, contentColor = c.onErrorContainer, shadowElevation = 6.dp,
@@ -513,20 +635,28 @@ fun OnTripScreen(nav: Navigator) {
             DriverSheet(top = 20.dp) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Column(Modifier.weight(1f)) {
-                        Text("Dropping ${CurrentTrip.rider} at", fontSize = 14.sp, color = c.onSurfaceVariant)
-                        Text(CurrentTrip.dropoffShort, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("Dropping ${firstName(ride.riderName)} at", fontSize = 14.sp, color = c.onSurfaceVariant)
+                        Text(ride.dropoff.name, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, maxLines = 2)
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("9 min", fontSize = 28.sp, lineHeight = 30.sp, fontWeight = FontWeight.ExtraBold)
-                        Text("3.4 km · 10:42", fontSize = 13.sp, color = c.onSurfaceVariant)
+                        Text(formatMinutes(remaining), fontSize = 28.sp, lineHeight = 30.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("${formatKm(ride.distanceMeters)} · $eta", fontSize = 13.sp, color = c.onSurfaceVariant)
                     }
                 }
-                WavyProgress(0.65f, color = c.primary, track = c.primaryContainer)
+                WavyProgress((elapsed.toFloat() / ride.durationSeconds.coerceAtLeast(1)).coerceIn(0.02f, 1f), color = c.primary, track = c.primaryContainer)
+                ShiftError(error)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Surface(onClick = {}, shape = RoundedCornerShape(20.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(64.dp)) {
                         Box(contentAlignment = Alignment.Center) { Text("Add stop", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
                     }
-                    NovaButton("End trip", onClick = { nav.replaceTop(Complete) }, modifier = Modifier.weight(2f), textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold))
+                    NovaButton(if (busy) "Ending…" else "End trip", enabled = !busy, modifier = Modifier.weight(2f),
+                        onClick = {
+                            scope.launch {
+                                busy = true; error = null
+                                runCatching { DriverStore.complete() }.onSuccess { nav.replaceTop(Complete) }.onFailure { error = errorMessage(it) }
+                                busy = false
+                            }
+                        }, textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold))
                 }
             }
         }
@@ -537,14 +667,19 @@ fun OnTripScreen(nav: Navigator) {
 fun CompleteScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var rating by rememberSaveable { mutableIntStateOf(0) }
+    val ride = DriverStore.lastCompleted ?: run { LaunchedEffect(Unit) { nav.goOnline() }; return }
+    val fare = formatMoney(ride.fareCents, ride.currency)
+    val minutes = remember(ride.id) {
+        runCatching { java.time.Duration.between(java.time.Instant.parse(ride.startedAt), java.time.Instant.parse(ride.completedAt)).toMinutes() }.getOrNull()
+    }
     val ink = NovaTheme.colors.onCta
     Column(Modifier.fillMaxSize().background(NovaTheme.colors.cta)) {
         Box(Modifier.fillMaxWidth().statusBarsPadding()) {
             ShapeBadge(NovaShape.Burst, 220.dp, ink.copy(alpha = 0.06f), Modifier.align(Alignment.TopEnd).offset(60.dp, (-40).dp))
             Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Trip complete · 27 min", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = ink)
-                Text("$25.70", fontSize = 76.sp, lineHeight = 76.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1.1).sp, color = ink)
-                Text("added to today · $312.40 total", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ink)
+                Text(listOfNotNull("Trip complete", minutes?.let { "${it.coerceAtLeast(1)} min" }).joinToString(" · "), fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+                Text(fare, fontSize = 64.sp, lineHeight = 68.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1.1).sp, color = ink, maxLines = 1)
+                Text("${ride.productName} to ${ride.dropoff.name}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = ink, maxLines = 1)
             }
         }
         Column(
@@ -554,21 +689,20 @@ fun CompleteScreen(nav: Navigator) {
         ) {
             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(NovaPalette.Mint).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Icon(NovaIcons.Check, null, tint = NovaPalette.OnMint)
-                Text("Paid in app · nothing to collect", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = NovaPalette.OnMint)
+                Text("Paid in app (${paymentLabel(ride.paymentMethod)}) · nothing to collect", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = NovaPalette.OnMint)
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Column(Modifier.fillMaxWidth().clip(groupShape(0, 2)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FareLine("Trip fare", CurrentTrip.fare)
-                    FareLine("Nova service fee", "−$5.70")
-                    FareLine("Tip from ${CurrentTrip.rider}", "+$3.00", c.primary, FontWeight.ExtraBold)
+                    FareLine("Distance", formatKm(ride.distanceMeters))
+                    FareLine("Pickup", ride.pickup.name)
                 }
                 Row(Modifier.fillMaxWidth().clip(groupShape(1, 2)).background(c.primaryContainer).padding(horizontal = 16.dp, vertical = 14.dp)) {
-                    Text("You earned", Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
-                    Text("$25.70", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+                    Text("Trip fare", Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+                    Text(fare, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Rate ${CurrentTrip.rider}", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text("Rate ${firstName(ride.riderName)}", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 ConnectedChoice(
                     listOf("Great rider", "Had an issue"), rating, { rating = it }, height = 56.dp, fontSize = 16,
                     container = c.surfaceContainerHigh,
@@ -576,7 +710,7 @@ fun CompleteScreen(nav: Navigator) {
                 )
             }
             Spacer(Modifier.weight(1f))
-            NovaButton("Find next trip", onClick = { nav.goOnline() }, height = 96.dp, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp))
+            NovaButton("Find next trip", onClick = { if (DriverStore.state.online) nav.goOnline() else nav.reset(Home) }, height = 96.dp, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 24.sp))
         }
     }
 }
@@ -584,4 +718,29 @@ fun CompleteScreen(nav: Navigator) {
 @Composable
 private fun FareLine(label: String, value: String, valueColor: Color = MaterialTheme.colorScheme.onSurface, weight: FontWeight = FontWeight.Bold) {
     Row { Text(label, Modifier.weight(1f), fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, fontSize = 15.sp, fontWeight = weight, color = valueColor) }
+}
+
+private fun paymentLabel(method: String): String = when (method) {
+    "gpay" -> "Google Pay"
+    "card" -> "Card"
+    "credit" -> "Nova credit"
+    else -> method.replaceFirstChar { it.uppercase() }
+}
+
+/** Rough minutes to drive [meters] in town (~30 km/h), for pickup ETAs before navigation exists. */
+private fun etaMinutes(meters: Number): Int = ((meters.toDouble() / 500.0) + 0.99).toInt().coerceAtLeast(1)
+
+private fun firstName(name: String): String = name.trim().substringBefore(' ').ifBlank { "the rider" }
+
+private fun secondsSince(iso: String?): Long =
+    iso?.let { runCatching { java.time.Duration.between(java.time.Instant.parse(it), java.time.Instant.now()).seconds }.getOrNull() } ?: 0L
+
+/** Shows a server error briefly at the bottom of a shift screen. */
+@Composable
+private fun ShiftError(message: String?, modifier: Modifier = Modifier) {
+    if (message == null) return
+    Text(
+        message, modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.errorContainer).padding(horizontal = 14.dp, vertical = 10.dp),
+        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer,
+    )
 }

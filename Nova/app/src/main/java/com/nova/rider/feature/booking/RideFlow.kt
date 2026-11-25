@@ -558,6 +558,7 @@ fun FindingDriverScreen(nav: Navigator) {
                         Text(TripFormat.money(ride.fareCents, ride.currency), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
                     }
                 }
+                ride?.passenger?.let { PassengerHandoff(ride, it) }
                 TripStore.bookError?.let { Text(tripErrorMessage(it), style = MaterialTheme.typography.bodyMedium, color = c.error) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NovaOutlinedButton(
@@ -574,11 +575,88 @@ fun FindingDriverScreen(nav: Navigator) {
                         },
                         modifier = Modifier.weight(1f),
                     )
-                    NovaTonalButton("Share trip", onClick = { nav.go(ShareTrip) }, modifier = Modifier.weight(1f))
+                    // Android share sheet with the public live-tracking link (WhatsApp, Messages, ...).
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    NovaTonalButton("Share trip", onClick = { ride?.let { shareTrip(context, it, null) } }, modifier = Modifier.weight(1f))
                 }
             }
         }
     }
+}
+
+/**
+ * After booking for someone else:
+ *  * On Nova: the ride is already in their app (in-app notification, live updates later), so we
+ *    just confirm it.
+ *  * Not on Nova: nothing reaches them automatically, so the booker sends the details from their
+ *    own phone: an SMS composer addressed to that number with the pickup, drop-off and a live
+ *    tracking link (opens Nova if they install it, the web page otherwise). No SMS provider,
+ *    no cost to Nova, and it comes from someone they know. The driver also sees their name and
+ *    calls that number on arrival.
+ */
+@Composable
+private fun PassengerHandoff(ride: Ride, passenger: Passenger) {
+    val c = MaterialTheme.colorScheme
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val first = passenger.name.substringBefore(' ')
+    if (passenger.onNova) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(NovaPalette.Mint).padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(NovaIcons.Check, null, tint = NovaPalette.OnMint)
+            Text("$first has this ride in their Nova app.", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = NovaPalette.OnMint)
+        }
+        return
+    }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.tertiaryContainer).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ShapeBadge(NovaShape.Cookie, 40.dp, c.tertiary) { Icon(NovaIcons.Msg, null, tint = c.onTertiary, modifier = Modifier.size(20.dp)) }
+            Column(Modifier.weight(1f)) {
+                Text("$first doesn't have Nova", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                Text(
+                    "Text them the pickup and a live tracking link. The driver will call them on arrival.",
+                    fontSize = 13.sp, lineHeight = 18.sp, color = c.onTertiaryContainer,
+                )
+            }
+        }
+        NovaButton(
+            "Text $first the trip details",
+            onClick = { textPassenger(context, ride, passenger) },
+            height = 48.dp, leadingIcon = NovaIcons.Send,
+            colors = ButtonDefaults.buttonColors(containerColor = c.tertiary, contentColor = c.onTertiary),
+        )
+    }
+}
+
+private fun tripMessage(ride: Ride, passenger: Passenger?): String = buildString {
+    if (passenger != null) append("Hi ${passenger.name.substringBefore(' ')}, I booked you a Nova ${ride.productName} ride.\n")
+    else append("I'm taking a Nova ${ride.productName} ride.\n")
+    append("Pickup: ${ride.pickup.name}\n")
+    append("Drop-off: ${ride.dropoff.name}")
+    if (ride.trackUrl.isNotBlank()) append("\nTrack it live: ${ride.trackUrl}")
+}
+
+/** SMS composer from the rider's own phone, addressed to the passenger; share sheet if no SMS app. */
+private fun textPassenger(context: android.content.Context, ride: Ride, passenger: Passenger) {
+    val sms = android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:${passenger.phone}"))
+        .putExtra("sms_body", tripMessage(ride, passenger))
+    try {
+        context.startActivity(sms)
+    } catch (_: android.content.ActivityNotFoundException) {
+        shareTrip(context, ride, passenger)
+    }
+}
+
+private fun shareTrip(context: android.content.Context, ride: Ride, passenger: Passenger?) {
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(android.content.Intent.EXTRA_TEXT, tripMessage(ride, passenger ?: ride.passenger))
+    }
+    context.startActivity(android.content.Intent.createChooser(send, "Share trip"))
 }
 
 @Composable

@@ -562,6 +562,16 @@ pub(crate) fn require_user_id(st: &AppState, headers: &HeaderMap) -> Result<Uuid
     Uuid::parse_str(&claims.sub).map_err(|_| ApiError::Unauthorized)
 }
 
+/// Contact phone for a user (driver <-> rider during a trip). Only verified numbers.
+pub(crate) async fn verified_phone(st: &AppState, user: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT phone_e164 FROM users WHERE id = $1 AND phone_verified_at IS NOT NULL")
+        .bind(user)
+        .fetch_optional(&st.pool)
+        .await
+        .ok()
+        .flatten()
+}
+
 async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse, ApiError> {
     let user_id = require_user_id(&st, &headers)?;
     Ok(Json(load_user(&st, user_id).await?))

@@ -96,7 +96,15 @@ fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
             .onSuccess { rides = it; hasMore = it.size == 20 }
             .onFailure { loadError = tripErrorMessage(it) }
     }
-    androidx.compose.runtime.LaunchedEffect(empty) { if (!empty) load() else rides = emptyList() }
+    // Rides friends booked for me ("For someone" from the other side). Best effort: a failure
+    // here just hides the section, it never blocks my own Activity.
+    var forMe by androidx.compose.runtime.remember { mutableStateOf<List<com.nova.rider.data.auth.RideForMe>>(emptyList()) }
+    androidx.compose.runtime.LaunchedEffect(empty) {
+        if (!empty) {
+            load()
+            forMe = runCatching { NovaApi.ridesForMe() }.getOrDefault(emptyList())
+        } else rides = emptyList()
+    }
     val upcomingRides = rides.orEmpty().filter { it.status == "scheduled" }.sortedBy { it.scheduledAt }
     val pastRides = rides.orEmpty().filter { it.status != "scheduled" }
     TabPage("Activity", RiderTab.Activity, nav::tab) {
@@ -124,9 +132,44 @@ fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
         }
         val showTrips = filter != 2 && pastRides.isNotEmpty()
         val showUpcoming = filter != 1 && upcomingRides.isNotEmpty()
-        if (!showTrips && !showUpcoming) {
+        // Scheduled filter: only upcoming ones booked for me; Rides/All: all of them.
+        val shownForMe = if (filter == 2) forMe.filter { it.status == "scheduled" } else forMe
+        if (!showTrips && !showUpcoming && shownForMe.isEmpty()) {
             EmptyActivity(onBook = { nav.reset(Home) })
             return@TabPage
+        }
+        if (shownForMe.isNotEmpty()) {
+            SectionLabel("Booked for you", Modifier.padding(horizontal = 4.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                shownForMe.forEachIndexed { i, r ->
+                    val shape = when {
+                        shownForMe.size == 1 -> RoundedCornerShape(24.dp)
+                        i == 0 -> RoundedCornerShape(24.dp, 24.dp, 6.dp, 6.dp)
+                        i == shownForMe.lastIndex -> RoundedCornerShape(6.dp, 6.dp, 24.dp, 24.dp)
+                        else -> RoundedCornerShape(6.dp)
+                    }
+                    val whenIso = r.scheduledAt ?: r.requestedAt ?: r.createdAt
+                    val (statusText, statusColor) = when (r.status) {
+                        "scheduled" -> "Scheduled" to c.tertiary
+                        "requested" -> "Finding driver" to c.primary
+                        "accepted", "arriving" -> "Driver on the way" to c.primary
+                        "in_progress" -> "On the ride" to c.primary
+                        "completed" -> "Completed" to NovaTheme.colors.success
+                        "cancelled" -> "Cancelled" to c.error
+                        else -> "No driver found" to c.onSurfaceVariant
+                    }
+                    Surface(onClick = { nav.go(com.nova.rider.navigation.TrackRide(r.shareToken)) }, shape = shape, color = c.primaryContainer, contentColor = c.onPrimaryContainer) {
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            CookieAvatar(r.bookerName.take(1).uppercase(), c.primary, c.onPrimary, size = 44.dp)
+                            Column(Modifier.weight(1f)) {
+                                Text("From ${r.bookerName} · to ${r.dropoffName}", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Text("${RideTime.day(whenIso)} · ${RideTime.time(whenIso)} · ${r.productName}", fontSize = 13.sp)
+                            }
+                            Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = statusColor)
+                        }
+                    }
+                }
+            }
         }
         if (showUpcoming) upcomingRides.forEach { r ->
             Column(Modifier.clip(RoundedCornerShape(28.dp)).background(c.tertiaryContainer).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

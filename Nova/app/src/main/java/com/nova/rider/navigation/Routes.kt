@@ -66,3 +66,4 @@ import kotlinx.serialization.Serializable
 @Serializable data object NoService : Route
 @Serializable data object EmptyActivity : Route
 @Serializable data object SosActive : Route
+@Serializable data class TrackRide(val token: String) : Route

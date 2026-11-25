@@ -115,6 +115,7 @@ import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
 import com.nova.driver.data.*
+import com.nova.driver.data.DriverStore
 import com.nova.driver.feature.common.*
 import com.nova.driver.navigation.*
 import kotlinx.coroutines.delay
@@ -128,30 +129,49 @@ import androidx.compose.runtime.DisposableEffect
 fun NoShowScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ride = DriverStore.state.ride
+    val rider = ride?.riderName?.substringBefore(' ') ?: "The rider"
+    val freeWait = 180L
+    fun waitedNow() = ride?.arrivedAt?.let { runCatching { java.time.Duration.between(java.time.Instant.parse(it), java.time.Instant.now()).seconds }.getOrNull() } ?: 0L
+    var waited by remember { mutableStateOf(waitedNow()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); waited = waitedNow() } }
+    val canCancel = waited >= freeWait
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     Column(
         Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Box(Modifier.size(180.dp).semantics { contentDescription = "Waited 5 minutes" }, contentAlignment = Alignment.Center) {
+            Box(Modifier.size(180.dp).semantics { contentDescription = "Waited ${waited / 60} minutes ${waited % 60} seconds" }, contentAlignment = Alignment.Center) {
                 ShapeBadge(NovaShape.Sunny, 180.dp, c.tertiaryContainer)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("5:00", fontSize = 48.sp, lineHeight = 50.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                    Text("%d:%02d".format(waited / 60, waited % 60), fontSize = 48.sp, lineHeight = 50.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
                     Text("WAITED", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = c.onTertiaryContainer)
                 }
             }
-            Text("${CurrentTrip.rider} hasn't shown up", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), textAlign = TextAlign.Center)
-            Text("You've called twice and waited the full free time. You can cancel now and still get paid.", fontSize = 16.sp, lineHeight = 23.sp, color = c.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 310.dp))
-        }
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.primaryContainer).padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("No-show fee to you", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onPrimaryContainer)
-            Text("$8.00", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+            Text("$rider hasn't shown up", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), textAlign = TextAlign.Center)
+            Text(
+                if (canCancel) "You've waited the full free time. You can cancel the trip now."
+                else "You can cancel as a no-show after ${freeWait / 60} minutes at the pickup. Try calling $rider first.", fontSize = 16.sp, lineHeight = 23.sp, color = c.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 310.dp))
         }
         Spacer(Modifier.weight(1f))
-        NovaButton("Cancel & collect $8.00", onClick = { nav.goOnline() }, height = 72.dp, textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold))
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error) }
+        NovaButton(
+            if (busy) "Cancelling…" else "Cancel as no-show", enabled = canCancel && !busy, height = 72.dp,
+            onClick = {
+                scope.launch {
+                    busy = true; error = null
+                    runCatching { DriverStore.noShow() }
+                        .onSuccess { if (DriverStore.state.online) nav.goOnline() else nav.reset(Home) }
+                        .onFailure { error = com.nova.driver.data.api.errorMessage(it) }
+                    busy = false
+                }
+            }, textStyle = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.ExtraBold))
         Row(Modifier.offset(y = (-8).dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            ConnectedButton("Call again", 0, 2, onClick = { dial(context, "+6421000000") }, container = c.surfaceContainerHigh)
+            ConnectedButton("Call again", 0, 2, onClick = { ride?.riderPhone?.let { dial(context, it) } }, container = c.surfaceContainerHigh)
             ConnectedButton("Keep waiting", 1, 2, onClick = { nav.back() }, container = c.surfaceContainerHigh)
         }
     }
@@ -162,38 +182,38 @@ fun RiderCancelledScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var progress by remember { mutableStateOf(0.38f) }
+    val rider = remember { DriverStore.cancelledRider?.substringBefore(' ') ?: "The rider" }
+    val scope = rememberCoroutineScope()
+    // Still online on the server: the driver is already back in dispatch; this just says so.
+    val backOnline = { DriverStore.cancelledRider = null; nav.goOnline() }
     LaunchedEffect(Unit) {
         // Back online automatically after ~5 s.
         while (progress < 1f) { delay(50); progress = (progress + 0.0124f).coerceAtMost(1f) }
-        nav.goOnline()
+        backOnline()
     }
     Box(Modifier.fillMaxSize()) {
         MapBackdrop { userDot(196f, 300f, c.primary) }
-        ModalBottomSheet(onDismissRequest = { nav.goOnline() }, sheetState = sheet, containerColor = c.surfaceContainer) {
+        ModalBottomSheet(onDismissRequest = { backOnline() }, sheetState = sheet, containerColor = c.surfaceContainer) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     IconTile(NovaIcons.Close, c.tertiaryContainer, c.onTertiaryContainer, size = 64.dp, radius = 22.dp, iconSize = 28.dp)
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("${CurrentTrip.rider} cancelled", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp))
+                        Text("$rider cancelled", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp))
                         Text("Not your fault — your rating isn't affected.", fontSize = 15.sp, color = c.onSurfaceVariant)
                     }
-                }
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.primaryContainer).padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Cancellation fee", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
-                        Text("You'd driven 1.1 km toward pickup", fontSize = 13.sp, color = c.onPrimaryContainer)
-                    }
-                    Text("+$6.00", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Back online in ${((1f - progress) * 8).toInt().coerceAtLeast(0) + 1} s", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
                     androidx.compose.material3.LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(6.dp), color = NovaTheme.colors.cta, trackColor = c.surfaceContainerHighest)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(onClick = { nav.reset(Home) }, shape = RoundedCornerShape(20.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(64.dp)) {
+                    Surface(onClick = {
+                        DriverStore.cancelledRider = null
+                        scope.launch { runCatching { DriverStore.goOffline() }; nav.reset(Home) }
+                    }, shape = RoundedCornerShape(20.dp), color = c.surfaceContainerHighest, modifier = Modifier.weight(1f).height(64.dp)) {
                         Box(contentAlignment = Alignment.Center) { Text("Take a break", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
                     }
-                    NovaButton("Go online now", onClick = { nav.goOnline() }, modifier = Modifier.weight(1.4f))
+                    NovaButton("Go online now", onClick = { backOnline() }, modifier = Modifier.weight(1.4f))
                 }
             }
         }

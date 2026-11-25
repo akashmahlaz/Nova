@@ -128,6 +128,18 @@ fun DestinationMarker(at: GeoPoint) {
     }
 }
 
+/** The assigned driver's car, at their last reported position. */
+@Composable
+@GoogleMapComposable
+fun DriverCarMarker(at: GeoPoint) {
+    val fill = MaterialTheme.colorScheme.primary
+    MarkerComposable(fill, state = rememberUpdatedMarkerState(at.toLatLng()), anchor = Offset(0.5f, 0.5f)) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(fill).border(3.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) {
+            androidx.compose.material3.Icon(com.nova.designsystem.icons.NovaIcons.Car, null, Modifier.size(20.dp), tint = Color.White)
+        }
+    }
+}
+
 /** Route line from a Google encoded polyline (as returned by our /v1/rides/quote). */
 @Composable
 @GoogleMapComposable

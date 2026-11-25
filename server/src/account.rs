@@ -96,6 +96,8 @@ pub struct Notification {
     title: String,
     body: String,
     ride_id: Option<Uuid>,
+    /// For a ride booked for this rider by someone else: its tracking token (opens TrackRide).
+    share_token: Option<String>,
     read_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
 }
@@ -140,9 +142,11 @@ async fn list_notifications(
     let user = require_user_id(&st, &headers)?;
     let limit = q.limit.unwrap_or(30).clamp(1, 50);
     let notifications = sqlx::query_as::<_, Notification>(
-        "SELECT id, kind, event, title, body, ride_id, read_at, created_at FROM notifications
-         WHERE user_id = $1 AND ($2::timestamptz IS NULL OR created_at < $2)
-         ORDER BY created_at DESC LIMIT $3",
+        "SELECT n.id, n.kind, n.event, n.title, n.body, n.ride_id, r.share_token, n.read_at, n.created_at
+         FROM notifications n
+         LEFT JOIN rides r ON r.id = n.ride_id AND r.passenger_user_id = n.user_id
+         WHERE n.user_id = $1 AND ($2::timestamptz IS NULL OR n.created_at < $2)
+         ORDER BY n.created_at DESC LIMIT $3",
     )
     .bind(user)
     .bind(q.before)
@@ -186,11 +190,15 @@ async fn export(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<s
             'emergency_contacts', COALESCE((SELECT json_agg(c ORDER BY c.created_at) FROM (
                 SELECT name, phone_e164, relationship, created_at FROM emergency_contacts WHERE user_id = $1) c), '[]'),
             'rides', COALESCE((SELECT json_agg(r ORDER BY r.created_at) FROM (
-                SELECT id, status, product_id, pickup_name, pickup_address, pickup_lat, pickup_lng,
-                       dropoff_name, dropoff_address, dropoff_lat, dropoff_lng, stops, currency, fare_cents,
-                       distance_meters, duration_seconds, payment_method, passenger_name, passenger_phone,
-                       scheduled_at, requested_at, ended_at, cancel_reason, created_at
-                FROM rides WHERE rider_id = $1) r), '[]'),
+                SELECT r.id, r.status, r.product_id, r.pickup_name, r.pickup_address, r.pickup_lat, r.pickup_lng,
+                       r.dropoff_name, r.dropoff_address, r.dropoff_lat, r.dropoff_lng,
+                       COALESCE((SELECT json_agg(rs ORDER BY rs.stop_order) FROM (
+                           SELECT stop_order, name, lat, lng FROM ride_stops WHERE ride_id = r.id
+                       ) rs), '[]') AS stops,
+                       r.currency, r.fare_cents,
+                       r.distance_meters, r.duration_seconds, r.payment_method, r.passenger_name, r.passenger_phone,
+                       r.scheduled_at, r.requested_at, r.ended_at, r.cancel_reason, r.created_at
+                FROM rides r WHERE r.rider_id = $1) r), '[]'),
             'notifications', COALESCE((SELECT json_agg(n ORDER BY n.created_at) FROM (
                 SELECT kind, event, title, body, read_at, created_at FROM notifications WHERE user_id = $1) n), '[]')
         )",

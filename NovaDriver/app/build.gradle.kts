@@ -1,8 +1,30 @@
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// Same API addresses as the rider app (see Nova/app/build.gradle.kts). In local.properties:
+//   nova.api.base.url=https://...   release builds (production)
+//   nova.api.dev.url=http://...     debug builds; default is this Mac's Wi-Fi IP, port 3000
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val apiBaseUrl: String = localProps.getProperty("nova.api.base.url", "http://10.0.2.2:3000")
+fun lanIpv4(): String? = NetworkInterface.getNetworkInterfaces().toList()
+    .filter { it.isUp && !it.isLoopback && !it.isVirtual }
+    .sortedBy { if (it.name == "en0") 0 else 1 }
+    .flatMap { it.inetAddresses.toList() }
+    .firstOrNull { it is Inet4Address && it.isSiteLocalAddress }
+    ?.hostAddress
+val devApiBaseUrl: String = (findProperty("nova.api.dev.url") as String?)
+    ?: localProps.getProperty("nova.api.dev.url")
+    ?: "http://${lanIpv4() ?: "10.0.2.2"}:3000"
 
 android {
     namespace = "com.nova.driver"
@@ -19,7 +41,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"$devApiBaseUrl\"")
+        }
         release {
+            buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
             optimization {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
@@ -32,6 +58,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -54,7 +81,12 @@ dependencies {
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.graphics.shapes)
     implementation(libs.kotlinx.serialization.core)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.okhttp)
+    implementation(libs.google.play.services.location)
+    implementation(libs.libphonenumber)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
