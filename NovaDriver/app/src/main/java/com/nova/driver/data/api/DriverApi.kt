@@ -52,6 +52,8 @@ data class DriverProfile(
     @SerialName("licence_number") val licenceNumber: String,
     @SerialName("licence_expiry") val licenceExpiry: String? = null,
     @SerialName("approved_at") val approvedAt: String? = null,
+    /** Admin's message when the application was sent back or the account paused. */
+    @SerialName("review_note") val reviewNote: String? = null,
     @SerialName("created_at") val createdAt: String,
 )
 
@@ -80,7 +82,78 @@ data class DriverMe(
     val vehicle: Vehicle? = null,
     val products: List<DriverProduct> = emptyList(),
     val online: Boolean = false,
+    val documents: List<DriverDocument> = emptyList(),
+    val payout: PayoutSummary? = null,
+) {
+    /** Every required document is uploaded (in review) or verified. */
+    val documentsReady: Boolean get() = documents.isNotEmpty() && documents.all { !it.required || it.status == "uploaded" || it.status == "verified" }
+}
+
+/** A required document and the latest upload of it. [status]: null, uploaded, verified, rejected. */
+@Serializable
+data class DriverDocument(
+    val category: String,
+    val name: String,
+    val description: String = "",
+    val required: Boolean = true,
+    @SerialName("media_id") val mediaId: String? = null,
+    val status: String? = null,
+    @SerialName("rejection_reason") val rejectionReason: String? = null,
+    @SerialName("uploaded_at") val uploadedAt: String? = null,
 )
+
+@Serializable
+data class PayoutSummary(
+    @SerialName("account_name") val accountName: String,
+    @SerialName("account_last4") val accountLast4: String,
+    @SerialName("gst_registered") val gstRegistered: Boolean = false,
+    @SerialName("payout_schedule") val payoutSchedule: String = "daily",
+)
+
+@Serializable
+data class DriverTrip(
+    val id: String,
+    val status: String,
+    @SerialName("product_name") val productName: String,
+    val currency: String,
+    @SerialName("fare_cents") val fareCents: Long,
+    @SerialName("distance_meters") val distanceMeters: Long,
+    @SerialName("pickup_name") val pickupName: String,
+    @SerialName("dropoff_name") val dropoffName: String,
+    @SerialName("rider_name") val riderName: String,
+    @SerialName("cancel_reason") val cancelReason: String? = null,
+    @SerialName("ended_at") val endedAt: String? = null,
+)
+
+@Serializable
+data class EarningPoint(@SerialName("completed_at") val completedAt: String, @SerialName("fare_cents") val fareCents: Long, val currency: String)
+
+@Serializable
+data class Earnings(
+    val currency: String? = null,
+    @SerialName("total_cents") val totalCents: Long = 0,
+    val trips: Int = 0,
+    @SerialName("online_seconds") val onlineSeconds: Long = 0,
+    val rides: List<EarningPoint> = emptyList(),
+)
+
+/** Inbox entry (same inbox as the rider app: one Nova account). */
+@Serializable
+data class AppNotification(
+    val id: String,
+    val kind: String,
+    val event: String,
+    val title: String,
+    val body: String = "",
+    @SerialName("read_at") val readAt: String? = null,
+    @SerialName("created_at") val createdAt: String,
+)
+
+@Serializable
+private data class NotificationsRes(val notifications: List<AppNotification> = emptyList(), val unread: Int = 0)
+
+@Serializable
+private data class PresignRes(@SerialName("media_id") val mediaId: String, @SerialName("upload_url") val uploadUrl: String)
 
 /** What a car needs for one ride type (server table ride_products). */
 @Serializable
@@ -182,7 +255,7 @@ object DriverApi {
 
     suspend fun signup(firstName: String, lastName: String, phone: String, phoneProof: String): Session = io {
         request("POST", "/v1/auth/signup", buildJsonObject {
-            put("first_name", firstName); put("last_name", lastName); put("phone", phone); put("phone_proof", phoneProof)
+            put("first_name", firstName); put("last_name", lastName); put("phone", phone); put("phone_proof", phoneProof); put("role", "driver")
         }, auth = false).jsonObject.decode(Session.serializer())
     }
 
@@ -208,6 +281,66 @@ object DriverApi {
             put("year", year); put("seats", seats); put("is_electric", electric); put("wheelchair_accessible", wheelchair)
         }).decode(DriverMe.serializer())
     }
+
+    /** Sends the application for review (server checks car, documents and payout are all in). */
+    suspend fun submit(): DriverMe = io { request("POST", "/v1/driver/submit").decode(DriverMe.serializer()) }
+
+    suspend fun setPayout(accountName: String, accountNumber: String, taxNumber: String, gst: Boolean, schedule: String): DriverMe = io {
+        request("PUT", "/v1/driver/payout", buildJsonObject {
+            put("account_name", accountName); put("account_number", accountNumber); put("tax_number", taxNumber)
+            put("gst_registered", gst); put("payout_schedule", schedule)
+        }).decode(DriverMe.serializer())
+    }
+
+    suspend fun setProduct(productId: String, enabled: Boolean): DriverMe = io {
+        request("PUT", "/v1/driver/products", buildJsonObject { put("product_id", productId); put("enabled", enabled) }).decode(DriverMe.serializer())
+    }
+
+    suspend fun trips(from: String? = null, to: String? = null, limit: Int = 50): List<DriverTrip> = io {
+        val q = listOfNotNull(from?.let { "from=${enc(it)}" }, to?.let { "to=${enc(it)}" }, "limit=$limit").joinToString("&")
+        json.decodeFromJsonElement(ListSerializer(DriverTrip.serializer()), request("GET", "/v1/driver/trips?$q"))
+    }
+
+    suspend fun earnings(from: String, to: String): Earnings = io {
+        request("GET", "/v1/driver/earnings?from=${enc(from)}&to=${enc(to)}").decode(Earnings.serializer())
+    }
+
+    suspend fun notifications(): Pair<List<AppNotification>, Int> = io {
+        val res = request("GET", "/v1/notifications?limit=50").decode(NotificationsRes.serializer())
+        res.notifications to res.unread
+    }
+
+    suspend fun markAllRead() = io { request("POST", "/v1/notifications/read-all"); Unit }
+
+    /**
+     * Uploads one document photo straight to S3: the server hands out a 5-minute signed PUT URL
+     * (the file never passes through our API), then confirms the object landed.
+     */
+    suspend fun uploadDocument(category: String, bytes: ByteArray, contentType: String, fileName: String) = io {
+        val presign = request("POST", "/v1/media/presign-upload", buildJsonObject {
+            put("category", category); put("content_type", contentType); put("file_name", fileName)
+        }).decode(PresignRes.serializer())
+        val conn = (URL(presign.uploadUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "PUT"
+            doOutput = true
+            connectTimeout = 15_000
+            readTimeout = 60_000
+            setRequestProperty("Content-Type", contentType)
+            setFixedLengthStreamingMode(bytes.size)
+        }
+        try {
+            conn.outputStream.use { it.write(bytes) }
+            if (conn.responseCode !in 200..299) throw ApiException("upload_failed")
+        } catch (e: IOException) {
+            throw ApiException("network_error")
+        } finally {
+            conn.disconnect()
+        }
+        request("POST", "/v1/media/${presign.mediaId}/confirm")
+        Unit
+    }
+
+    private fun enc(v: String) = java.net.URLEncoder.encode(v, Charsets.UTF_8)
 
     suspend fun productRules(): List<ProductRule> = io {
         json.decodeFromJsonElement(ListSerializer(ProductRule.serializer()), request("GET", "/v1/driver/products", auth = false))
@@ -388,6 +521,8 @@ fun errorMessage(error: Throwable): String = when ((error as? ApiException)?.cod
     "code_not_found" -> "Send a new code to continue."
     "too_many_attempts" -> "Too many wrong codes. Send a new one."
     "account_not_found" -> "No Nova account for this number yet. Sign up to drive."
+    "already_registered" -> "This number already has a Nova account. If you drive with Nova, sign in instead. A rider account can't be used to drive, so use another number."
+    "not_driver_account" -> "This number is a Nova rider account. One account can have only one role, so use a different number to drive."
     "too_many_requests" -> (error as ApiException).retryAfterSeconds?.let { "Please wait ${it}s and try again." } ?: "Too many tries. Wait a moment."
     "sms_not_configured", "sms_failed" -> "We couldn't send the code. Try again shortly."
     "phone_required" -> "Add a verified mobile number to drive."
@@ -409,6 +544,14 @@ fun errorMessage(error: Throwable): String = when ((error as? ApiException)?.cod
     "ride_cancelled" -> "The rider cancelled this trip."
     "invalid_ride_state" -> "This trip has moved on. Refreshing…"
     "no_show_too_early" -> "Wait the full free time at the pickup first."
+    "documents_missing" -> "Upload every required document first."
+    "payout_required" -> "Add your bank details first."
+    "invalid_account_name" -> "Enter the name on the bank account."
+    "invalid_account_number" -> "Check the account number."
+    "invalid_tax_number" -> "Check your tax number."
+    "invalid_content_type" -> "Use a photo (JPG or PNG) or a PDF."
+    "upload_failed" -> "The upload didn't finish. Try again."
+    "s3_unavailable" -> "Document uploads are unavailable right now. Try again shortly."
     "wrong_pin" -> "That PIN doesn't match. Ask the rider to check their app."
     "unauthorized" -> "Please sign in again."
     "network_error" -> "No connection. Check your internet and try again."

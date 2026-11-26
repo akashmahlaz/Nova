@@ -139,8 +139,8 @@ fun NoShowScreen(nav: Navigator) {
     val canCancel = waited >= freeWait
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    Column(
-        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+    AdaptiveScreen(
+        Modifier.background(c.surface).statusBarsPadding().navigationBarsPadding(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
@@ -255,11 +255,11 @@ fun ConnectionLostScreen(nav: Navigator) {
                 Box(Modifier.size(56.dp).clip(CircleShape).background(c.surfaceContainerHigh), contentAlignment = Alignment.Center) { LoadingIndicator(Modifier.size(40.dp), color = c.primary) }
                 Column {
                     Text("Reconnecting…", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Last synced 40 s ago", fontSize = 14.sp, color = c.onSurfaceVariant)
+                    Text("We'll pick up where you left off", fontSize = 14.sp, color = c.onSurfaceVariant)
                 }
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                listOf(NovaIcons.Route to "Route saved — navigation continues", NovaIcons.Clock to "Distance & time recorded on phone", NovaIcons.Receipt to "Fare syncs automatically when back").forEachIndexed { i, (icon, t) ->
+                listOf(NovaIcons.Route to "Google Maps keeps navigating offline", NovaIcons.Clock to "Your trip stays assigned to you", NovaIcons.Receipt to "The fare was locked when the rider booked").forEachIndexed { i, (icon, t) ->
                     Row(Modifier.fillMaxWidth().clip(groupShape(i, 3)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Icon(icon, null, Modifier.size(20.dp)); Text(t, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     }
@@ -273,40 +273,43 @@ fun ConnectionLostScreen(nav: Navigator) {
 @Composable
 fun DocExpiredScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    Column(
-        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+    LaunchedEffect(Unit) { runCatching { DriverStore.refreshMe() } }
+    val docs = DriverStore.me?.documents.orEmpty()
+    val attention = docs.filter { it.required && (it.status == null || it.status == "rejected") }
+    val first = attention.firstOrNull()
+    AdaptiveScreen(
+        Modifier.background(c.surface).statusBarsPadding().navigationBarsPadding(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
-        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(c.errorContainer)) {
+        Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(if (first != null) c.errorContainer else c.primaryContainer)) {
             ShapeBadge(NovaShape.Burst, 160.dp, c.error.copy(alpha = 0.08f), Modifier.align(Alignment.TopEnd).offset(40.dp, (-30).dp))
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Box(Modifier.height(28.dp).clip(RoundedCornerShape(8.dp)).background(c.onErrorContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
-                    Text("CAN'T GO ONLINE", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.8.sp, color = c.errorContainer)
+                val ink = if (first != null) c.onErrorContainer else c.onPrimaryContainer
+                if (first != null) Box(Modifier.height(28.dp).clip(RoundedCornerShape(8.dp)).background(c.onErrorContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                    Text("ACTION NEEDED", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.8.sp, color = c.errorContainer)
                 }
-                Text("Your vehicle insurance expired", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), color = c.onErrorContainer)
-                Text("Expired on 12 Nov 2026. Upload the renewed policy and you'll usually be back on the road the same day.", fontSize = 15.sp, lineHeight = 22.sp, color = c.onErrorContainer)
+                Text(if (first != null) "${attention.size} document${if (attention.size > 1) "s" else ""} need${if (attention.size == 1) "s" else ""} a new upload" else "Your documents are in order",
+                    style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), color = ink)
+                Text(if (first != null) "Upload a clear photo and our team will review it, usually the same day." else "Nothing to do right now.", fontSize = 15.sp, lineHeight = 22.sp, color = ink)
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(Modifier.fillMaxWidth().clip(groupShape(0, 3)).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                IconTile(NovaIcons.ShieldCheck, c.errorContainer, c.onErrorContainer)
-                Column { Text("Vehicle insurance", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Expired 2 days ago", fontSize = 13.sp, color = c.error) }
-            }
-            Row(Modifier.fillMaxWidth().clip(groupShape(1, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                IconTile(NovaIcons.Doc, c.tertiaryContainer, c.onTertiaryContainer)
-                Column { Text("Certificate of Fitness", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Expires in 18 days", fontSize = 13.sp, color = c.tertiary) }
-            }
-            Row(Modifier.fillMaxWidth().clip(groupShape(2, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Icon(NovaIcons.Check, null, tint = NovaTheme.colors.onCta) }
-                Column { Text("Licence, rego & P endorsement", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("All valid", fontSize = 13.sp, color = c.onSurfaceVariant) }
+            docs.forEachIndexed { i, d ->
+                val bad = d.required && (d.status == null || d.status == "rejected")
+                Row(Modifier.fillMaxWidth().clip(groupShape(i, docs.size)).background(if (bad) c.surfaceContainerHigh else c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    if (bad) IconTile(NovaIcons.Doc, c.errorContainer, c.onErrorContainer)
+                    else Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Icon(NovaIcons.Check, null, tint = NovaTheme.colors.onCta) }
+                    Column {
+                        Text(d.name, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(when (d.status) { "verified" -> "Verified"; "uploaded" -> "In review"; "rejected" -> d.rejectionReason ?: "Sent back"; else -> "Not uploaded" },
+                            fontSize = 13.sp, color = if (bad) c.error else c.onSurfaceVariant)
+                    }
+                }
             }
         }
         Spacer(Modifier.weight(1f))
-        NovaButton("Scan new policy", onClick = { nav.go(Scan) }, height = 96.dp, leadingIcon = NovaIcons.Camera, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp))
-        TextButton(onClick = { nav.go(Scan) }, modifier = Modifier.fillMaxWidth().height(48.dp).offset(y = (-8).dp)) {
-            Text("Upload PDF instead", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.primary)
-        }
+        if (first != null) NovaButton("Upload ${first.name.lowercase()}", onClick = { nav.go(Scan(first.category, first.name)) }, height = 96.dp, leadingIcon = NovaIcons.Camera, textStyle = MaterialTheme.typography.headlineSmall.copy(fontSize = 22.sp))
     }
 }
 
@@ -315,13 +318,19 @@ fun SosActiveScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
     var dialled by rememberSaveable { mutableStateOf(false) }
+    val ride = DriverStore.state.ride
+    val where = when (ride?.status) {
+        "in_progress" -> "On a trip to ${ride.dropoff.name}"
+        "accepted", "arriving" -> "Heading to ${ride.pickup.name}"
+        else -> null
+    }
     LaunchedEffect(Unit) {
         if (!dialled) { dialled = true; dial(context, "111") } // dialer opens with 111; the driver places the call
     }
     val pulse = rememberInfiniteTransition(label = "sos")
     val t by pulse.animateFloat(0f, 1f, infiniteRepeatable(tween(1600)), label = "t")
-    Column(
-        Modifier.fillMaxSize().background(c.error).statusBarsPadding().navigationBarsPadding().padding(start = 24.dp, end = 24.dp, top = 40.dp, bottom = 36.dp),
+    AdaptiveScreen(
+        Modifier.background(c.error).statusBarsPadding().navigationBarsPadding(), contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 40.dp, bottom = 36.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(Modifier.height(32.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -332,16 +341,13 @@ fun SosActiveScreen(nav: Navigator) {
             Box(Modifier.size(220.dp).graphicsLayer { val s = 0.8f + 0.4f * t; scaleX = s; scaleY = s; alpha = 0.35f * (1f - t) }.clip(CircleShape).background(Color.White))
             ShapeBadge(NovaShape.Sunny, 168.dp, Color.White) { Icon(NovaIcons.Phone, null, tint = c.error, modifier = Modifier.size(64.dp)) }
         }
-        Text("Connected to 111", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 34.sp, lineHeight = 38.sp), color = Color.White, modifier = Modifier.padding(top = 8.dp))
-        Text("Nova's safety team is also on the line and can see your location, trip and rider details.", fontSize = 16.sp, lineHeight = 23.sp, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(Modifier.fillMaxWidth().clip(groupShape(0, 2)).background(c.errorContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(NovaIcons.Pin, null, tint = c.onErrorContainer); Text("Great South Rd near Ellerslie", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onErrorContainer)
-            }
-            Row(Modifier.fillMaxWidth().clip(groupShape(1, 2)).background(c.errorContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(NovaIcons.Mic, null, tint = c.onErrorContainer); Text("Audio recording on", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onErrorContainer)
-                Box(Modifier.size(10.dp).clip(CircleShape).background(c.error))
-            }
+        Text("Calling 111", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 34.sp, lineHeight = 38.sp), color = Color.White, modifier = Modifier.padding(top = 8.dp))
+        Text("Your phone's dialer is open with 111. Tap call, stay on the line and tell them where you are.", fontSize = 16.sp, lineHeight = 23.sp, color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.widthIn(max = 300.dp))
+        if (where != null) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.errorContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(NovaIcons.Pin, null, tint = c.onErrorContainer); Text(where, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onErrorContainer)
+        }
+        Surface(onClick = { dial(context, "111") }, shape = CircleShape, color = Color.White, contentColor = c.error, modifier = Modifier.fillMaxWidth().height(64.dp)) {
+            Box(contentAlignment = Alignment.Center) { Text("Open dialer again", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold) }
         }
         Spacer(Modifier.weight(1f))
         Surface(onClick = { nav.back() }, shape = CircleShape, color = Color.Transparent, contentColor = Color.White, border = BorderStroke(2.dp, Color.White), modifier = Modifier.fillMaxWidth().height(64.dp)) {

@@ -67,7 +67,8 @@ async fn presign_upload(
 
     if !matches!(
         req.category.as_str(),
-        "avatar" | "driver_licence" | "driver_insurance" | "vehicle_reg" | "support_attachment" | "admin_asset"
+        "avatar" | "driver_licence" | "driver_endorsement" | "driver_photo" | "driver_insurance" | "vehicle_reg"
+            | "support_attachment" | "admin_asset"
     ) {
         return Err(ApiError::BadRequest("invalid_category"));
     }

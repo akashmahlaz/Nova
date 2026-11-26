@@ -119,6 +119,8 @@ import com.nova.driver.feature.common.*
 import com.nova.driver.navigation.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.widthIn
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -129,12 +131,13 @@ import com.nova.driver.data.api.errorMessage
 import com.nova.driver.data.auth.AuthStore
 import com.nova.driver.data.auth.SignInDraft
 import kotlinx.coroutines.async
+import androidx.compose.ui.layout.onSizeChanged
 
 @Composable
 fun SplashScreen(nav: Navigator) {
     LaunchedEffect(Unit) {
         val brand = async { delay(900) }
-        val route = if (AuthStore.session != null) DriverStore.entryRoute() else null
+        val route = if (AuthStore.session != null) runCatching { DriverStore.entryRoute() }.getOrNull() else null
         brand.await()
         when {
             AuthStore.session == null -> nav.reset(Welcome)
@@ -183,8 +186,8 @@ private fun DriverWordmark() {
 @Composable
 fun WelcomeScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    Column(
-        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp),
+    AdaptiveScreen(
+        Modifier.background(c.surface).statusBarsPadding().navigationBarsPadding(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         DriverWordmark()
@@ -253,13 +256,9 @@ fun SignUpScreen(nav: Navigator) {
                 val sent = DriverApi.sendOtp(e164, "signup")
                 AuthStore.draft = SignInDraft(e164, "signup", first.trim(), last.trim(), sent.destinationHint, sent.resendIn)
                 nav.go(Otp)
-            } catch (e: ApiException) {
-                if (e.code == "already_registered") {
-                    // Already rides with Nova: same account drives too, so sign them in instead.
-                    runCatching { DriverApi.sendOtp(e164, "login") }
-                        .onSuccess { sent -> AuthStore.draft = SignInDraft(e164, "login", destinationHint = sent.destinationHint, resendIn = sent.resendIn); nav.go(Otp) }
-                        .onFailure { error = errorMessage(it) }
-                } else error = errorMessage(e)
+            } catch (e: Exception) {
+                // One account, one role: an existing number is never turned into a driver here.
+                error = errorMessage(e)
             } finally { busy = false }
         }
         Unit
@@ -396,6 +395,8 @@ fun OtpScreen(nav: Navigator) {
                     else -> nav.reset(route)
                 }
             } catch (e: Exception) {
+                // A rider or admin account signed in: don't keep it on this phone's driver app.
+                if ((e as? ApiException)?.code == "not_driver_account") AuthStore.clearSession()
                 error = errorMessage(e)
                 code = ""
             } finally { busy = false }
@@ -412,7 +413,7 @@ fun OtpScreen(nav: Navigator) {
     }
     Column(Modifier.fillMaxSize().background(c.surface)) {
         NovaTopBar(onBack = { nav.back() })
-        Column(Modifier.weight(1f).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        AdaptiveScreen(Modifier.weight(1f).navigationBarsPadding(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Enter the 6-digit code", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp))
                 Row {
@@ -549,36 +550,43 @@ fun VehicleScreen(nav: Navigator) {
     }
 }
 
-private data class Doc(val id: String, val name: String, val sub: String, val done: Boolean)
+private data class Doc(val id: String, val name: String, val sub: String, val done: Boolean, val bad: Boolean = false, val locked: Boolean = false)
 
 @Composable
 fun DocumentsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
-    val uploaded = remember { mutableStateListOf<String>() }
-    var licence by rememberSaveable { mutableStateOf(DriverStore.licenceNumber.ifBlank { DriverStore.me?.driver?.licenceNumber ?: "" }) }
+    val me = DriverStore.me
+    var licence by rememberSaveable { mutableStateOf(DriverStore.licenceNumber.ifBlank { me?.driver?.licenceNumber ?: "" }) }
     var licenceSheet by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // The checklist (and each upload's review status) lives on the server.
+    LaunchedEffect(Unit) { runCatching { DriverStore.refreshMe() } }
     val licenceOk = licence.trim().length in 4..20 && licence.trim().all { it.isLetterOrDigit() || it == '-' }
-    val car = DriverStore.vehicleDraft ?: DriverStore.me?.vehicle?.let { VehicleDraft(it.make, it.model, it.color, it.plate, it.year, it.seats, it.isElectric, it.wheelchairAccessible) }
-    val docs = listOf(
-        Doc("dl", "Driving licence", if (licenceOk) "Licence ${licence.trim().uppercase()}" else "Enter your licence number", licenceOk),
-        Doc("rc", "Vehicle rego", car?.let { "${it.plate} · ${it.year} ${it.make} ${it.model}" } ?: "Add your car first", car != null),
-        // Uploads are recorded on this phone for now; document storage and review come next.
-        Doc("pe", "P endorsement", "Photo of your endorsement", false),
-        Doc("ph", "Profile photo", "Riders see this when you arrive", false),
-        Doc("in", "Vehicle insurance", "Required to go online", false),
-        Doc("bk", "Bank account", "For daily payouts", false),
-    ).map { if (it.id in uploaded) it.copy(done = true, sub = "Uploaded · in review") else it }
+    val car = DriverStore.vehicleDraft ?: me?.vehicle?.let { VehicleDraft(it.make, it.model, it.color, it.plate, it.year, it.seats, it.isElectric, it.wheelchairAccessible) }
+    val docs = buildList {
+        add(Doc("licence_no", "Licence number", if (licenceOk) licence.trim().uppercase() else "The number on your licence card", licenceOk))
+        add(Doc("car", "Your car", car?.let { "${it.plate} · ${it.year} ${it.make} ${it.model}" } ?: "Add your car first", car != null))
+        me?.documents.orEmpty().forEach { d ->
+            val sub = when (d.status) {
+                "verified" -> "Verified"
+                "uploaded" -> "Uploaded · in review"
+                "rejected" -> "Sent back: ${d.rejectionReason ?: "upload a clearer photo"}"
+                else -> d.description
+            }
+            add(Doc(d.category, d.name, sub, d.status == "uploaded" || d.status == "verified", bad = d.status == "rejected", locked = d.status == "verified"))
+        }
+        add(Doc("bank", "Bank account", me?.payout?.let { "${it.accountName} ···· ${it.accountLast4}" } ?: "For your payouts", me?.payout != null))
+    }
     val done = docs.count { it.done }
-    val ready = done == docs.size
+    val ready = done == docs.size && me != null
     val submit = {
         scope.launch {
             busy = true; error = null
             DriverStore.licenceNumber = licence.trim().uppercase()
             runCatching { DriverStore.submitApplication() }
-                .onSuccess { nav.go(Bank) }
+                .onSuccess { nav.reset(if (DriverStore.me?.driver?.status == "approved") Home else Pending) }
                 .onFailure { error = errorMessage(it) }
             busy = false
         }
@@ -587,14 +595,14 @@ fun DocumentsScreen(nav: Navigator) {
     if (licenceSheet) {
         ModalBottomSheet(onDismissRequest = { licenceSheet = false }, containerColor = c.surface) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("Driving licence", style = MaterialTheme.typography.headlineSmall)
+                Text("Licence number", style = MaterialTheme.typography.headlineSmall)
                 Text("The number on the front of your licence card (5a on NZ licences).", fontSize = 14.sp, color = c.onSurfaceVariant)
                 NovaTextField(licence, { licence = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(20) }, "Licence number", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters))
-                NovaButton("Save", onClick = { licenceSheet = false }, enabled = licenceOk)
+                NovaButton("Save", onClick = { DriverStore.licenceNumber = licence.trim().uppercase(); licenceSheet = false }, enabled = licenceOk)
             }
         }
     }
-    SubPage(null, onBack = { nav.back() }, bottom = {
+    SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(2) }, bottom = {
         error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
         NovaButton(
             when { busy -> "Submitting…"; ready -> "Submit for review"; else -> "Finish ${docs.size - done} more to continue" },
@@ -603,31 +611,36 @@ fun DocumentsScreen(nav: Navigator) {
     }) {
         Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Get road-ready", style = MaterialTheme.typography.headlineLarge)
-            Text("$done of ${docs.size} done · takes about 5 minutes", fontSize = 15.sp, color = c.onSurfaceVariant)
+            Text("$done of ${docs.size} done · photos go securely to our review team", fontSize = 15.sp, color = c.onSurfaceVariant)
             WavyProgress(done / docs.size.toFloat(), color = c.primary, track = c.primaryContainer)
         }
+        if (me == null) LoadingIndicator(Modifier.align(Alignment.CenterHorizontally).size(48.dp), color = c.primary)
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             docs.forEachIndexed { i, d ->
                 Surface(
                     onClick = {
-                        when {
-                            d.id == "dl" -> licenceSheet = true
-                            d.id == "rc" -> nav.back()
-                            !d.done -> if (d.id == "in") nav.go(Scan) else uploaded.add(d.id)
+                        when (d.id) {
+                            "licence_no" -> licenceSheet = true
+                            "car" -> nav.back()
+                            "bank" -> nav.go(Bank)
+                            else -> nav.go(Scan(d.id, d.name))
                         }
                     },
-                    enabled = !d.done || d.id == "dl" || d.id == "rc", shape = groupShape(i, docs.size),
+                    enabled = !d.locked, shape = groupShape(i, docs.size),
                     color = if (d.done) c.surfaceContainer else c.surfaceContainerHigh, modifier = Modifier.fillMaxWidth(),
                 ) {
                     Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         if (d.done) Box(Modifier.size(40.dp).clip(CircleShape).background(NovaTheme.colors.cta), contentAlignment = Alignment.Center) { Icon(NovaIcons.Check, null, tint = NovaTheme.colors.onCta) }
-                        else IconTile(NovaIcons.Doc, c.tertiaryContainer, c.onTertiaryContainer)
+                        else IconTile(if (d.bad) NovaIcons.Warning else NovaIcons.Doc, if (d.bad) c.errorContainer else c.tertiaryContainer, if (d.bad) c.onErrorContainer else c.onTertiaryContainer)
                         Column(Modifier.weight(1f)) {
                             Text(d.name, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            Text(d.sub, fontSize = 13.sp, color = if (d.done) c.onSurfaceVariant else c.tertiary)
+                            Text(d.sub, fontSize = 13.sp, color = when { d.bad -> c.error; d.done -> c.onSurfaceVariant; else -> c.tertiary }, maxLines = 2)
                         }
-                        if (!d.done) Box(Modifier.height(36.dp).clip(CircleShape).background(NovaTheme.colors.coralBright).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-                            Text("Upload", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                        if (!d.done) Box(Modifier.height(36.dp).clip(CircleShape).background(if (d.bad) c.errorContainer else NovaTheme.colors.coralBright).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                when { d.id == "licence_no" || d.id == "bank" -> "Add"; d.id == "car" -> "Edit"; d.bad -> "Re-upload"; else -> "Upload" },
+                                fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = if (d.bad) c.onErrorContainer else c.onTertiaryContainer,
+                            )
                         }
                     }
                 }
@@ -637,21 +650,90 @@ fun DocumentsScreen(nav: Navigator) {
 }
 
 @Composable
-fun ScanScreen(nav: Navigator) {
+fun ScanScreen(nav: Navigator, route: Scan) {
     val volt = NovaTheme.colors.cta
     val ink = NovaTheme.colors.onCta
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var flash by rememberSaveable { mutableStateOf(false) }
-    // Official Activity Result APIs: system camera for a quick photo, Photo Picker for gallery.
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bmp -> if (bmp != null) nav.go(Bank) }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) nav.go(Bank) }
+    var uploading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val upload = { uri: android.net.Uri ->
+        scope.launch {
+            uploading = true; error = null
+            runCatching { DriverStore.uploadDocument(route.category, uri) }
+                .onSuccess { nav.back() }
+                .onFailure { error = errorMessage(it) }
+            uploading = false
+        }
+        Unit
+    }
+    // Live CameraX viewfinder inside the frame; Photo Picker for gallery; PDFs via the file picker.
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) upload(uri) }
+    val pdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) upload(uri) }
+    fun granted() = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    var cameraAllowed by remember { mutableStateOf(granted()) }
+    val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        cameraAllowed = ok
+        if (!ok) error = "Camera is off for Nova. Allow it in Settings, or upload from your gallery or a PDF."
+    }
+    LaunchedEffect(Unit) { if (!cameraAllowed) askCamera.launch(android.Manifest.permission.CAMERA) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var surfaceRequest by remember { mutableStateOf<androidx.camera.core.SurfaceRequest?>(null) }
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var frameSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val imageCapture = remember {
+        androidx.camera.core.ImageCapture.Builder().setCaptureMode(androidx.camera.core.ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build()
+    }
+    LaunchedEffect(cameraAllowed, frameSize) {
+        if (!cameraAllowed || frameSize.width == 0) return@LaunchedEffect
+        val future = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context)
+        val provider = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            future.addListener({ cont.resumeWith(runCatching { future.get() }) }, androidx.core.content.ContextCompat.getMainExecutor(context))
+        }
+        val preview = androidx.camera.core.Preview.Builder().build().apply { setSurfaceProvider { surfaceRequest = it } }
+        // The photo is cropped to the frame the driver sees, not the whole sensor.
+        val rotation = (context as? android.app.Activity)?.display?.rotation ?: android.view.Surface.ROTATION_0
+        val viewPort = androidx.camera.core.ViewPort.Builder(android.util.Rational(frameSize.width, frameSize.height), rotation).build()
+        val group = androidx.camera.core.UseCaseGroup.Builder().setViewPort(viewPort).addUseCase(preview).addUseCase(imageCapture).build()
+        try {
+            provider.unbindAll()
+            camera = provider.bindToLifecycle(lifecycleOwner, androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA, group)
+            kotlinx.coroutines.awaitCancellation()
+        } catch (e: IllegalArgumentException) {
+            error = "No back camera found. Upload from your gallery or a PDF."
+        } finally {
+            provider.unbind(preview, imageCapture)
+            camera = null; surfaceRequest = null
+        }
+    }
+    // The flash button is the torch, so glare can be checked before taking the photo.
+    LaunchedEffect(flash, camera) { camera?.cameraControl?.enableTorch(flash) }
+    val shoot = shoot@{
+        if (!cameraAllowed) { askCamera.launch(android.Manifest.permission.CAMERA); return@shoot }
+        if (camera == null) return@shoot
+        val uri = DocumentImages.newCaptureUri(context)
+        val out = context.contentResolver.openOutputStream(uri) ?: return@shoot
+        uploading = true; error = null
+        imageCapture.takePicture(
+            androidx.camera.core.ImageCapture.OutputFileOptions.Builder(out).build(),
+            androidx.core.content.ContextCompat.getMainExecutor(context),
+            object : androidx.camera.core.ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(output: androidx.camera.core.ImageCapture.OutputFileResults) { out.close(); upload(uri) }
+                override fun onError(exception: androidx.camera.core.ImageCaptureException) {
+                    out.close(); uploading = false; error = "Couldn't take the photo. Try again."
+                }
+            },
+        )
+    }
     val sweep = rememberInfiniteTransition(label = "scan")
     val y by sweep.animateFloat(0f, 1f, infiniteRepeatable(tween(1800), RepeatMode.Reverse), label = "y")
-    Column(Modifier.fillMaxSize().background(Color(0xFF0E0F12)).statusBarsPadding().navigationBarsPadding()) {
+    AdaptiveScreen(Modifier.background(Color(0xFF0E0F12)).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilledIconButton(onClick = { nav.back() }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White), modifier = Modifier.size(48.dp)) { Icon(NovaIcons.Close, "Close") }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("Driver licence · Front", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-                Text("Step 1 of 2", fontSize = 13.sp, color = Color(0xFFC6C5D0))
+                Text(route.title, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                Text(if (uploading) "Uploading securely…" else "Photo or PDF", fontSize = 13.sp, color = Color(0xFFC6C5D0))
             }
             androidx.compose.material3.FilledIconToggleButton(
                 checked = flash, onCheckedChange = { flash = it },
@@ -659,17 +741,35 @@ fun ScanScreen(nav: Navigator) {
                 modifier = Modifier.size(48.dp),
             ) { Icon(NovaIcons.Flash, "Flash") }
         }
-        Box(Modifier.padding(top = 80.dp).fillMaxWidth().padding(horizontal = 14.dp).height(234.dp)) {
-            // Card placeholder inside the frame
-            androidx.compose.foundation.layout.BoxWithConstraints(Modifier.padding(10.dp).fillMaxSize().clip(RoundedCornerShape(20.dp)).background(Brush.linearGradient(listOf(Color(0xFF2A2D33), Color(0xFF1E2025))))) {
+        // Card-shaped frame (ID-1 ratio): same size on phones, grows to a readable size on tablets,
+        // and sits higher in landscape so the shutter stays on screen.
+        Box(
+            Modifier.padding(top = if (com.nova.designsystem.adaptive.isHeightCompact()) 16.dp else 80.dp).align(Alignment.CenterHorizontally)
+                .widthIn(max = 520.dp).fillMaxWidth()
+                .padding(horizontal = 14.dp).aspectRatio(1.62f),
+        ) {
+            // Live camera inside the frame; the card outline shows until the camera starts.
+            androidx.compose.foundation.layout.BoxWithConstraints(
+                Modifier.padding(10.dp).fillMaxSize().clip(RoundedCornerShape(20.dp)).background(Brush.linearGradient(listOf(Color(0xFF2A2D33), Color(0xFF1E2025))))
+                    .onSizeChanged { frameSize = it },
+            ) {
                 val travel = maxHeight - 3.dp
-                Box(Modifier.offset(20.dp, 24.dp).size(80.dp, 100.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF3A3E46)))
-                Column(Modifier.offset(116.dp, 30.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(Modifier.size(160.dp, 12.dp).clip(CircleShape).background(Color(0xFF3A3E46)))
-                    Box(Modifier.size(120.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
-                    Box(Modifier.size(140.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
+                val request = surfaceRequest
+                if (request != null) {
+                    androidx.camera.compose.CameraXViewfinder(
+                        surfaceRequest = request,
+                        modifier = Modifier.fillMaxSize().semantics { contentDescription = "Camera view. Line up the ${route.title.lowercase()} inside the frame." }
+                            .clickable(enabled = !uploading, role = Role.Button, onClickLabel = "Take photo") { shoot() },
+                    )
+                } else {
+                    Box(Modifier.offset(20.dp, 24.dp).size(80.dp, 100.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF3A3E46)))
+                    Column(Modifier.offset(116.dp, 30.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(Modifier.size(160.dp, 12.dp).clip(CircleShape).background(Color(0xFF3A3E46)))
+                        Box(Modifier.size(120.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
+                        Box(Modifier.size(140.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
+                    }
+                    Box(Modifier.align(Alignment.BottomStart).offset(20.dp, (-26).dp).size(240.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
                 }
-                Box(Modifier.align(Alignment.BottomStart).offset(20.dp, (-26).dp).size(240.dp, 10.dp).clip(CircleShape).background(Color(0xFF33363D)))
                 // Scan line sweeps the card top to bottom.
                 Box(Modifier.offset(y = travel * y).fillMaxWidth().height(3.dp).shadow(8.dp, ambientColor = volt, spotColor = volt).background(volt))
             }
@@ -692,22 +792,28 @@ fun ScanScreen(nav: Navigator) {
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Box(Modifier.size(32.dp).clip(CircleShape).background(ink), contentAlignment = Alignment.Center) { Icon(NovaIcons.Check, null, tint = volt, modifier = Modifier.size(18.dp)) }
-            Text("Edges found · hold still", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+            Text(if (uploading) "Uploading…" else "Fill the frame · hold still", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = ink)
         }
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFFB4AB), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, start = 24.dp, end = 24.dp)) }
         Text("Avoid glare. All four corners should be inside the frame.", fontSize = 14.sp, color = Color(0xFFC6C5D0), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 12.dp, start = 24.dp, end = 24.dp))
         Spacer(Modifier.weight(1f))
         Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.CenterVertically) {
             FilledIconButton(
-                onClick = { gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onClick = { gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, enabled = !uploading,
                 shapes = IconButtonDefaults.shapes(RoundedCornerShape(18.dp), RoundedCornerShape(28.dp)),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White),
                 modifier = Modifier.size(56.dp),
             ) { Icon(NovaIcons.Image, "Upload from gallery") }
             Box(
                 Modifier.size(88.dp).border(5.dp, Color.White, CircleShape).padding(11.dp).clip(CircleShape).background(Color.White)
-                    .clickable(role = Role.Button) { camera.launch(null) }.semantics { contentDescription = "Take photo" },
-            )
-            Spacer(Modifier.size(56.dp))
+                    .clickable(enabled = !uploading, role = Role.Button) { shoot() }.semantics { contentDescription = "Take photo" },
+            ) { if (uploading) LoadingIndicator(Modifier.align(Alignment.Center).size(40.dp), color = volt) }
+            FilledIconButton(
+                onClick = { pdf.launch(arrayOf("application/pdf")) }, enabled = !uploading,
+                shapes = IconButtonDefaults.shapes(RoundedCornerShape(18.dp), RoundedCornerShape(28.dp)),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha = 0.12f), contentColor = Color.White),
+                modifier = Modifier.size(56.dp),
+            ) { Icon(NovaIcons.Doc, "Upload a PDF") }
         }
     }
 }
@@ -715,15 +821,34 @@ fun ScanScreen(nav: Navigator) {
 @Composable
 fun BankScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var name by rememberSaveable { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val saved = DriverStore.me?.payout
+    val schedules = listOf("daily", "weekly", "instant")
+    var name by rememberSaveable { mutableStateOf(saved?.accountName ?: "") }
     var account by rememberSaveable { mutableStateOf("") }
     var ird by rememberSaveable { mutableStateOf("") }
-    var gst by rememberSaveable { mutableStateOf(false) }
-    var schedule by rememberSaveable { mutableIntStateOf(0) }
+    var gst by rememberSaveable { mutableStateOf(saved?.gstRegistered ?: false) }
+    var schedule by rememberSaveable { mutableIntStateOf(schedules.indexOf(saved?.payoutSchedule ?: "daily").coerceAtLeast(0)) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
     // NZ format: BB-bbbb-AAAAAAA-SS(S); bank 12 = ASB.
     val digits = account.filter(Char::isDigit)
     val valid = digits.length in 15..16
-    SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(3) }, bottom = { NovaButton("Submit for review", onClick = { nav.reset(Pending) }, enabled = valid && name.isNotBlank()) }) {
+    val save = {
+        scope.launch {
+            busy = true; error = null
+            runCatching { DriverStore.savePayout(name.trim(), account.trim(), ird.trim(), gst, schedules[schedule]) }
+                .onSuccess { nav.back() }
+                .onFailure { error = errorMessage(it) }
+            busy = false
+        }
+        Unit
+    }
+    SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(3) }, bottom = {
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
+        NovaButton(if (busy) "Saving…" else "Save bank details", onClick = save, enabled = valid && name.isNotBlank() && !busy)
+    }) {
+        if (saved != null) Text("On file: ${saved.accountName} ···· ${saved.accountLast4}. Enter the full number again to change it.", fontSize = 14.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
         Text("Where should we pay you?", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp))
         NovaTextField(name, { name = it }, "Account name")
         NovaTextField(account, { account = it.filter { ch -> ch.isDigit() || ch == '-' }.take(19) }, "NZ bank account number", placeholder = "BB-bbbb-AAAAAAA-SS", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
@@ -760,8 +885,8 @@ fun PendingScreen(nav: Navigator) {
             delay(10_000)
         }
     }
-    Column(
-        Modifier.fillMaxSize().background(c.surface).statusBarsPadding().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 48.dp, bottom = 24.dp),
+    AdaptiveScreen(
+        Modifier.background(c.surface).statusBarsPadding().navigationBarsPadding(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 48.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -806,6 +931,17 @@ fun PendingScreen(nav: Navigator) {
             }
         }
         Spacer(Modifier.weight(1f))
+        val rejected = DriverStore.me?.documents.orEmpty().filter { it.status == "rejected" }
+        val note = DriverStore.me?.driver?.reviewNote?.takeIf { !approved }
+        if (!approved && (rejected.isNotEmpty() || note != null || DriverStore.me?.documentsReady == false)) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.errorContainer).padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Action needed", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = c.onErrorContainer)
+                rejected.forEach { Text("${it.name}: ${it.rejectionReason ?: "upload a clearer photo"}", fontSize = 14.sp, color = c.onErrorContainer) }
+                note?.let { Text(it, fontSize = 14.sp, color = c.onErrorContainer) }
+                if (rejected.isEmpty() && note == null) Text("Some documents are still missing.", fontSize = 14.sp, color = c.onErrorContainer)
+                NovaButton("Fix documents", onClick = { nav.go(Documents) }, height = 52.dp)
+            }
+        }
         if (approved) NovaButton("Start driving", onClick = { nav.reset(Home) }, height = 72.dp)
         else NovaOutlinedButton("Check again", onClick = { scope.launch { runCatching { DriverStore.refreshMe() } } }, modifier = Modifier.fillMaxWidth())
     }

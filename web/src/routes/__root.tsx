@@ -16,27 +16,27 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-      { title: 'Nova Ops — Admin Console' },
+      { title: 'Nova Ops' },
     ],
     links: [
       {
         rel: 'stylesheet',
-        href: 'https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap',
+        href: 'https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,400;8..144,500;8..144,600&family=Roboto+Mono:wght@400;500&display=swap',
       },
       { rel: 'stylesheet', href: appCss },
     ],
   }),
   notFoundComponent: () => (
-    <div className="min-h-screen bg-background flex items-center justify-center p-6 text-foreground">
-      <div className="max-w-sm w-full rounded-2xl bg-card border border-border p-6 text-center space-y-3">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">404</div>
-        <h1 className="text-lg font-bold">Page not found</h1>
-        <p className="text-xs text-muted-foreground">The requested route does not exist in Nova Ops.</p>
+    <div className="min-h-screen bg-canvas flex items-center justify-center p-6 text-fg">
+      <div className="max-w-sm w-full rounded-2xl bg-surface border border-line p-6 text-center space-y-3">
+        <div className="font-mono text-xs text-fg-3">404</div>
+        <h1 className="text-lg font-medium">Page not found</h1>
+        <p className="text-sm text-fg-2">This address isn't part of Nova Ops.</p>
         <Link
           to="/"
-          className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-medium"
+          className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-fg text-surface text-sm font-medium"
         >
-          Back to Console
+          Back to overview
         </Link>
       </div>
     </div>
@@ -50,7 +50,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body className="min-h-screen bg-background text-foreground font-sans antialiased">
+      <body className="min-h-screen bg-canvas text-fg font-sans antialiased">
         {children}
         <Scripts />
       </body>

@@ -95,7 +95,7 @@ fun NovaDriverApp() {
             entry<Otp> { OtpScreen(nav) }
             entry<Vehicle> { VehicleScreen(nav) }
             entry<Documents> { DocumentsScreen(nav) }
-            entry<Scan> { ScanScreen(nav) }
+            entry<Scan> { ScanScreen(nav, it) }
             entry<Bank> { BankScreen(nav) }
             entry<Pending> { PendingScreen(nav) }
             entry<Home> { HomeScreen(nav) }

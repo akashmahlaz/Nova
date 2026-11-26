@@ -118,6 +118,10 @@ import com.nova.driver.data.*
 import com.nova.driver.navigation.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.nova.designsystem.adaptive.WidthClass
+import com.nova.designsystem.adaptive.contentWidth
+import com.nova.designsystem.adaptive.widthClass
+import com.nova.designsystem.components.DriverNavigationRail
 
 /** Floating square-ish map button (56dp, 18dp radius). */
 @Composable
@@ -140,26 +144,84 @@ fun SubPage(
     Column(Modifier.fillMaxSize().background(background).imePadding()) {
         NovaTopBar(onBack = onBack, title = title)
         header?.invoke(this)
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp), content = content,
+        // Phones: full width. Tablets / unfolded / landscape: centred at a readable width.
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.contentWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp), content = content,
+            )
+        }
+        if (bottom != null) Column(
+            Modifier.align(Alignment.CenterHorizontally).contentWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp), content = bottom,
         )
-        if (bottom != null) Column(Modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = bottom)
     }
 }
 
 /** Top-level tab page: large title, scrolling content, driver navigation bar. */
 @Composable
 fun TabPage(title: String?, tab: DriverTab, onTab: (DriverTab) -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            if (title != null) Text(title, style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp), modifier = Modifier.padding(horizontal = 8.dp))
-            content()
+    // M3 adaptive navigation: bar on compact/medium widths, rail on expanded.
+    TabScaffold(tab, onTab, Modifier.background(MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.contentWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (title != null) Text(title, style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 44.sp), modifier = Modifier.padding(horizontal = 8.dp))
+                content()
+            }
         }
-        DriverNavigationBar(selected = tab, onSelect = onTab)
+    }
+}
+
+/**
+ * Driver tabs around [content]: short navigation bar below on compact (phones) and medium widths
+ * (label beside icon on medium), collapsed wide navigation rail at the start on expanded widths.
+ * [barInContent] = the screen draws the bar itself (Home puts it inside its bottom panel).
+ */
+@Composable
+fun TabScaffold(tab: DriverTab, onTab: (DriverTab) -> Unit, modifier: Modifier = Modifier, barInContent: Boolean = false, content: @Composable BoxScope.() -> Unit) {
+    val width = widthClass()
+    if (width == WidthClass.Expanded) {
+        Row(modifier.fillMaxSize()) {
+            DriverNavigationRail(selected = tab, onSelect = onTab)
+            Box(Modifier.weight(1f).fillMaxHeight(), content = content)
+        }
+    } else {
+        Column(modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), content = content)
+            if (!barInContent) DriverNavigationBar(selected = tab, onSelect = onTab, wide = width == WidthClass.Medium)
+        }
+    }
+}
+
+/** The bottom bar for a screen that places it itself, or nothing when the rail is showing. */
+@Composable
+fun AdaptiveNavigationBar(tab: DriverTab, onTab: (DriverTab) -> Unit) {
+    when (widthClass()) {
+        WidthClass.Expanded -> Unit
+        WidthClass.Medium -> DriverNavigationBar(selected = tab, onSelect = onTab, wide = true)
+        WidthClass.Compact -> DriverNavigationBar(selected = tab, onSelect = onTab)
+    }
+}
+
+/**
+ * Full-screen step (no top bar): content keeps its phone layout, including `Spacer(weight)` to
+ * push buttons down, but scrolls when the window is short (phone landscape, split screen) and is
+ * centred at a readable width on large windows.
+ */
+@Composable
+fun AdaptiveScreen(
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    verticalArrangement: Arrangement.Vertical = Arrangement.Top,
+    horizontalAlignment: Alignment.Horizontal = Alignment.Start,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        Column(
+            // heightIn(min) lets weights fill the screen when it fits; the scroll takes over when it doesn't.
+            Modifier.verticalScroll(rememberScrollState()).heightIn(min = maxHeight).contentWidth().padding(contentPadding),
+            verticalArrangement = verticalArrangement, horizontalAlignment = horizontalAlignment, content = content,
+        )
     }
 }
 
@@ -319,9 +381,13 @@ fun OnlinePill(online: Boolean, onClick: () -> Unit, modifier: Modifier = Modifi
     }
 }
 
+/** Money earned in a period, or $0.00 before the first trip. */
+fun earnedLabel(e: com.nova.driver.data.api.Earnings?): String =
+    com.nova.driver.data.formatMoney(e?.totalCents ?: 0, e?.currency ?: "NZD")
+
 /** "Today $286.50" chip at the top right of the driving map. */
 @Composable
-fun TodayChip(amount: String = Driver.today, modifier: Modifier = Modifier) {
+fun TodayChip(amount: String, modifier: Modifier = Modifier) {
     Column(Modifier.then(modifier).height(56.dp).clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(horizontal = 18.dp), verticalArrangement = Arrangement.Center) {
         Text("Today", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(amount, fontSize = 18.sp, lineHeight = 20.sp, fontWeight = FontWeight.ExtraBold)
@@ -364,7 +430,8 @@ fun MapTools(modifier: Modifier = Modifier, content: @Composable ColumnScope.() 
 /** Bottom sheet that sits over the map (driver surfaces use the container tone). */
 @Composable
 fun DriverSheet(modifier: Modifier = Modifier, showHandle: Boolean = false, top: Dp = 22.dp, content: @Composable ColumnScope.() -> Unit) {
-    MapSheet(modifier, color = MaterialTheme.colorScheme.surfaceContainer, showHandle = showHandle, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (showHandle) 0.dp else top, bottom = 28.dp)) {
+    // On wide windows the sheet stays a readable width over the map instead of stretching.
+    MapSheet(modifier.contentWidth(), color = MaterialTheme.colorScheme.surfaceContainer, showHandle = showHandle, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = if (showHandle) 0.dp else top, bottom = 28.dp)) {
         Column(Modifier.navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
     }
 }
@@ -392,9 +459,10 @@ fun dial(context: android.content.Context, number: String) {
     context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$number")))
 }
 
-/** Turn-by-turn in Google Maps (or any maps app) until in-app navigation exists. */
+/** Turn-by-turn in the driver's chosen app (Settings › Navigation app), else any maps app. */
 fun navigateTo(context: android.content.Context, lat: Double, lng: Double) {
-    val nav = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.navigation:q=$lat,$lng"))
+    val url = if (com.nova.driver.data.NavPrefs.app(context) == "waze") "https://waze.com/ul?ll=$lat,$lng&navigate=yes" else "google.navigation:q=$lat,$lng"
+    val nav = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
     val any = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$lat,$lng?q=$lat,$lng"))
     runCatching { context.startActivity(nav) }.recoverCatching { context.startActivity(any) }
 }

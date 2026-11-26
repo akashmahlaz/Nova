@@ -91,6 +91,14 @@ object DriverStore {
     /** Name of the rider who cancelled the trip this driver was on; RiderCancelled clears it. */
     var cancelledRider: String? by mutableStateOf(null)
 
+    /** Fares and trips since local midnight / since Monday (null until loaded). */
+    var today: com.nova.driver.data.api.Earnings? by mutableStateOf(null)
+        private set
+    var week: com.nova.driver.data.api.Earnings? by mutableStateOf(null)
+        private set
+    var unread: Int by mutableStateOf(0)
+        private set
+
     var vehicleDraft: VehicleDraft? = null
     var licenceNumber: String = ""
 
@@ -112,6 +120,9 @@ object DriverStore {
         cancelledRider = null
         vehicleDraft = null
         licenceNumber = ""
+        today = null
+        week = null
+        unread = 0
     }
 
     // ---------- account ----------
@@ -122,7 +133,7 @@ object DriverStore {
         if (rules.isEmpty()) runCatching { DriverApi.productRules() }.onSuccess { rules = it }
     }
 
-    /** Creates the driver profile (first time) and saves the car typed on the Vehicle screen. */
+    /** Creates the driver profile, saves the car, then sends it all for review. */
     suspend fun submitApplication() {
         val current = me ?: refreshMe()
         if (current.driver == null || current.driver.status == "pending") {
@@ -131,11 +142,48 @@ object DriverStore {
         vehicleDraft?.let { v ->
             me = DriverApi.setVehicle(v.make, v.model, v.color, v.plate, v.year, v.seats, v.electric, v.wheelchair)
         }
+        me = DriverApi.submit()
     }
+
+    /** Photo or PDF for one document type, straight to S3, then the checklist is re-read. */
+    suspend fun uploadDocument(category: String, uri: android.net.Uri) {
+        val file = runCatching { DocumentImages.prepare(appContext, uri) }.getOrElse { throw ApiException("invalid_content_type") }
+        DriverApi.uploadDocument(category, file.bytes, file.contentType, file.fileName)
+        refreshMe()
+    }
+
+    suspend fun savePayout(name: String, number: String, tax: String, gst: Boolean, schedule: String) {
+        me = DriverApi.setPayout(name, number, tax, gst, schedule)
+    }
+
+    suspend fun setProduct(productId: String, enabled: Boolean) {
+        me = DriverApi.setProduct(productId, enabled)
+    }
+
+    /** Today's and this week's earnings, in the phone's time zone (weeks start Monday). */
+    suspend fun refreshEarnings() {
+        val zone = java.time.ZoneId.systemDefault()
+        val now = java.time.ZonedDateTime.now(zone)
+        val midnight = now.toLocalDate().atStartOfDay(zone)
+        val monday = now.toLocalDate().with(java.time.DayOfWeek.MONDAY).atStartOfDay(zone)
+        val end = now.plusMinutes(1).toInstant().toString()
+        runCatching { DriverApi.earnings(midnight.toInstant().toString(), end) }.onSuccess { today = it }
+        runCatching { DriverApi.earnings(monday.toInstant().toString(), end) }.onSuccess { week = it }
+    }
+
+    suspend fun refreshUnread() {
+        runCatching { DriverApi.notifications() }.onSuccess { unread = it.second }
+    }
+
+    fun markRead() { unread = 0 }
 
     /** Where a signed-in driver belongs: onboarding, review, a trip in progress, or home. */
     suspend fun entryRoute(): Route? {
-        val account = runCatching { refreshMe() }.getOrNull() ?: return null
+        val account = try { refreshMe() } catch (e: ApiException) {
+            // One account, one role: a rider/admin account can't use the driver app.
+            if (e.code == "not_driver_account") { AuthStore.clearSession(); throw e }
+            return null
+        } catch (e: Exception) { return null }
         val driver = account.driver
         if (driver == null || account.vehicle == null) return com.nova.driver.navigation.Vehicle
         if (driver.status != "approved") return com.nova.driver.navigation.Pending
@@ -204,6 +252,7 @@ object DriverStore {
         val done = DriverApi.complete(ride.id)
         lastCompleted = done
         state = state.copy(ride = null)
+        refreshEarnings()
     }
 
     suspend fun cancelRide(reason: String) {
@@ -345,6 +394,8 @@ object DriverStore {
                 runCatching { json.decodeFromJsonElement(Offer.serializer(), raw) }.onSuccess { state = state.copy(offer = it) }
             }
             "offer_closed" -> event["offer_id"]?.jsonPrimitive?.content?.let(::dropOffer)
+            // Approved, paused, or a document sent back: re-read the account.
+            "driver_status" -> { runCatching { refreshMe() }; refreshUnread() }
             // hello (just connected) and ride changes: re-read the whole state, it's one cheap call.
             else -> runCatching { refreshState() }
         }

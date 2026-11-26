@@ -397,6 +397,11 @@ pub struct SignupReq {
     phone: Option<String>,
     #[garde(skip)]
     email: Option<String>,
+    /// "rider" (default, the rider app) or "driver" (the driver app). One account has one role;
+    /// admins are only made by an admin.
+    #[garde(skip)]
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Result<(StatusCode, Json<SessionRes>), ApiError> {
@@ -406,6 +411,10 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
     if first_name.is_empty() {
         return Err(ApiError::BadRequest("invalid_name"));
     }
+    let role = match req.role.as_deref().unwrap_or("rider") {
+        r @ ("rider" | "driver") => r,
+        _ => return Err(ApiError::BadRequest("invalid_role")),
+    };
 
     let mut phone_e164: Option<String> = None;
     let mut phone_verified = false;
@@ -439,8 +448,8 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
 
     let id = Uuid::now_v7();
     let inserted = sqlx::query(
-        "INSERT INTO users (id, phone_e164, email, first_name, last_name, phone_verified_at, email_verified_at)
-         VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() ELSE NULL END, CASE WHEN $7 THEN now() ELSE NULL END)",
+        "INSERT INTO users (id, phone_e164, email, first_name, last_name, phone_verified_at, email_verified_at, role)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $6 THEN now() ELSE NULL END, CASE WHEN $7 THEN now() ELSE NULL END, $8)",
     )
     .bind(id)
     .bind(&phone_e164)
@@ -449,6 +458,7 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
     .bind(&last_name)
     .bind(phone_verified)
     .bind(email_verified)
+    .bind(role)
     .execute(&st.pool)
     .await;
     match inserted {
@@ -464,6 +474,15 @@ async fn signup(State(st): State<AppState>, Json(req): Json<SignupReq>) -> Resul
 // ---------- sessions ----------
 
 pub(crate) async fn issue_session(st: &AppState, user: &User) -> Result<SessionRes, ApiError> {
+    // Every sign-in path (OTP, passkey, sign-up, refresh) ends here, so this one check keeps a
+    // deactivated account out everywhere.
+    let deactivated: bool = sqlx::query_scalar("SELECT deactivated_at IS NOT NULL FROM users WHERE id = $1")
+        .bind(user.id)
+        .fetch_one(&st.pool)
+        .await?;
+    if deactivated {
+        return Err(ApiError::Forbidden("account_deactivated"));
+    }
     let access_token = jwt::encode_access(&st.cfg.jwt_secret, user.id)?;
     let refresh_token = otp::new_refresh_token();
     sqlx::query("INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, $4)")

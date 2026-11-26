@@ -87,6 +87,9 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.google.play.services.location)
     implementation(libs.libphonenumber)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.compose)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

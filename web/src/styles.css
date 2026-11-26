@@ -4,11 +4,87 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Nova Ops tokens. Graphite neutrals carry the chrome; Volt (the apps' "go" colour) is the one
+ * accent: primary action, live state, this week's data. Same brand as the rider/driver apps.
+ */
+:root {
+  --canvas: #f3f3f4;
+  --surface: #ffffff;
+  --sunken: #f7f7f8;
+  --raised: #fbfbfb;
+  --fg: #17171a;
+  --fg-2: #4f4f57;
+  --fg-3: #6e6e78;
+  --line: rgb(23 23 26 / 0.08);
+  --line-strong: rgb(23 23 26 / 0.14);
+  --volt: #cff24a;
+  --on-volt: #1a2400;
+  --accent-ink: #4b6100;
+  --good: #23784a;
+  --warn: #9a5800;
+  --bad: #b3261e;
+  --chart-muted: #c9c9cf;
+  --plate: #ffffff;
+  --plate-ink: #111114;
+  color-scheme: light;
+}
+
+.dark {
+  --canvas: #0c0c0e;
+  --surface: #141417;
+  --sunken: #101012;
+  --raised: #1b1b1f;
+  --fg: #ececef;
+  --fg-2: #a3a3ad;
+  --fg-3: #80808b;
+  --line: rgb(236 236 239 / 0.08);
+  --line-strong: rgb(236 236 239 / 0.14);
+  --accent-ink: #cff24a;
+  --good: #63c48c;
+  --warn: #e3a447;
+  --bad: #f08a80;
+  --chart-muted: #3a3a42;
+  --plate: #f4f4f2;
+  --plate-ink: #111114;
+  color-scheme: dark;
+}
+
 @theme inline {
-  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Roboto Flex', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-raised: var(--raised);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-volt: var(--volt);
+  --color-on-volt: var(--on-volt);
+  --color-accent-ink: var(--accent-ink);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 html,
 body {
   min-height: 100%;
+  background: var(--canvas);
+}
+
+:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
 }

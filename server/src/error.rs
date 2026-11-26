@@ -10,6 +10,8 @@ use serde_json::json;
 pub enum ApiError {
     BadRequest(&'static str),
     Unauthorized,
+    /// Signed in, but this account may not do this (e.g. a rider account on the driver API).
+    Forbidden(&'static str),
     NotFound(&'static str),
     Conflict(&'static str),
     /// Seconds until the client may retry.
@@ -24,6 +26,7 @@ impl IntoResponse for ApiError {
         let (status, code) = match self {
             ApiError::BadRequest(c) => (StatusCode::BAD_REQUEST, c),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            ApiError::Forbidden(c) => (StatusCode::FORBIDDEN, c),
             ApiError::NotFound(c) => (StatusCode::NOT_FOUND, c),
             ApiError::Conflict(c) => (StatusCode::CONFLICT, c),
             ApiError::TooManyRequests(secs) => {

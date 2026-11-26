@@ -1,5 +1,21 @@
 package com.nova.driver.feature.account
 
+import com.nova.driver.data.DriverStore
+import com.nova.driver.data.NavPrefs
+import com.nova.driver.data.formatKm
+import com.nova.driver.data.formatMoney
+import com.nova.driver.data.api.AppNotification
+import com.nova.driver.data.api.DriverApi
+import com.nova.driver.data.api.DriverTrip
+import com.nova.driver.data.api.Earnings
+import com.nova.driver.data.api.errorMessage
+import com.nova.driver.data.auth.AuthStore
+import java.time.DayOfWeek
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -121,38 +137,79 @@ import com.nova.driver.navigation.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+// ---------- shared helpers ----------
+
+private val zone: ZoneId get() = ZoneId.systemDefault()
+private fun local(iso: String?): ZonedDateTime? = iso?.let { runCatching { Instant.parse(it).atZone(zone) }.getOrNull() }
+private fun hours(seconds: Long): String = if (seconds < 3600) "${seconds / 60}m" else "%.1fh".format(seconds / 3600.0)
+private fun money(e: Earnings?): String = e?.currency?.let { formatMoney(e.totalCents, it) } ?: "—"
+
+/** Day = 3-hour slots, Week = Mon–Sun, Month = weeks of the month. Times in the phone's zone. */
+private data class Period(val label: String, val range: String, val from: ZonedDateTime, val to: ZonedDateTime, val labels: List<String>, val slot: (ZonedDateTime) -> Int)
+
+private fun periods(now: ZonedDateTime): List<Period> {
+    val day = now.toLocalDate().atStartOfDay(zone)
+    val monday = now.toLocalDate().with(DayOfWeek.MONDAY).atStartOfDay(zone)
+    val month = now.toLocalDate().withDayOfMonth(1).atStartOfDay(zone)
+    val end = now.plusMinutes(1)
+    return listOf(
+        Period("Day", "Today, ${now.format(DateTimeFormatter.ofPattern("EEE d MMM"))}", day, end,
+            listOf("12a", "3a", "6a", "9a", "12p", "3p", "6p", "9p")) { it.hour / 3 },
+        Period("Week", "${monday.format(DateTimeFormatter.ofPattern("d MMM"))} – ${monday.plusDays(6).format(DateTimeFormatter.ofPattern("d MMM"))}", monday, end,
+            listOf("M", "T", "W", "T", "F", "S", "S")) { it.dayOfWeek.value - 1 },
+        Period("Month", "${now.format(DateTimeFormatter.ofPattern("MMMM"))} so far", month, end,
+            listOf("W1", "W2", "W3", "W4", "W5")) { ((it.dayOfMonth - 1) / 7).coerceAtMost(4) },
+    )
+}
+
 @Composable
 fun EarningsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var period by rememberSaveable { mutableIntStateOf(1) }
-    val cur = EarningsPeriods[period]
-    val max = (cur.values.maxOrNull() ?: 1).coerceAtLeast(1)
+    val all = remember { periods(ZonedDateTime.now(zone)) }
+    val cur = all[period]
+    var data by remember(period) { mutableStateOf<Earnings?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(period) {
+        runCatching { DriverApi.earnings(cur.from.toInstant().toString(), cur.to.toInstant().toString()) }
+            .onSuccess { data = it; error = null }.onFailure { error = errorMessage(it) }
+    }
+    val values = remember(data) {
+        val v = LongArray(cur.labels.size)
+        data?.rides?.forEach { r -> local(r.completedAt)?.let { v[cur.slot(it).coerceIn(0, v.lastIndex)] += r.fareCents } }
+        v.toList()
+    }
+    val max = (values.maxOrNull() ?: 1L).coerceAtLeast(1L)
+    val highlight = values.indexOf(values.maxOrNull() ?: 0L).takeIf { (values.maxOrNull() ?: 0L) > 0 } ?: -1
     TabPage("Earnings", DriverTab.Earnings, nav::tab) {
-        ConnectedChoice(EarningsPeriods.map { it.label }, period, { period = it }, fontSize = 15)
+        ConnectedChoice(all.map { it.label }, period, { period = it }, fontSize = 15)
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(c.surfaceContainer).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Column {
                 Text(cur.range, fontSize = 14.sp, color = c.onSurfaceVariant)
-                Text(cur.total, fontSize = 52.sp, lineHeight = 56.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp)
+                Text(if (data == null && error == null) "…" else money(data).takeIf { data?.currency != null } ?: "No trips yet", fontSize = 52.sp, lineHeight = 56.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp, maxLines = 1)
+                error?.let { Text(it, fontSize = 13.sp, color = c.error) }
             }
             Row(
-                Modifier.fillMaxWidth().height(150.dp).semantics { contentDescription = "Earnings by ${listOf("hour", "day", "week")[period]}, highest bar highlighted" },
+                Modifier.fillMaxWidth().height(150.dp).semantics { contentDescription = "Earnings by ${listOf("time of day", "day", "week")[period]}" },
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom,
             ) {
-                cur.values.forEachIndexed { i, v ->
+                values.forEachIndexed { i, v ->
                     val target = maxOf(8f, v / max.toFloat() * 118f).dp
                     val h by animateDpAsState(target, MaterialTheme.motionScheme.defaultSpatialSpec())
                     Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Box(Modifier.fillMaxWidth().height(h).clip(CircleShape).background(when { i == cur.highlight -> NovaTheme.colors.cta; v > 0 -> c.onSurfaceVariant; else -> c.surfaceContainerHigh }))
-                        Text(cur.days[i], fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (i == cur.highlight) c.primary else c.onSurfaceVariant)
+                        Box(Modifier.fillMaxWidth().height(h).clip(CircleShape).background(when { i == highlight -> NovaTheme.colors.cta; v > 0 -> c.onSurfaceVariant; else -> c.surfaceContainerHigh }))
+                        Text(cur.labels[i], fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (i == highlight) c.primary else c.onSurfaceVariant)
                     }
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatTile(cur.trips, "Trips", RoundedCornerShape(24.dp, 8.dp, 8.dp, 24.dp), c.surfaceContainerHigh, c.onSurface) { nav.go(Trips) }
-            StatTile(cur.hours, "Online", RoundedCornerShape(8.dp), c.surfaceContainerHigh, c.onSurface, null)
-            StatTile(cur.tips, "Tips", RoundedCornerShape(8.dp, 24.dp, 24.dp, 8.dp), c.primaryContainer, c.onPrimaryContainer) { nav.go(Quests) }
+            val avg = data?.takeIf { it.trips > 0 && it.currency != null }?.let { formatMoney(it.totalCents / it.trips, it.currency!!) } ?: "—"
+            StatTile("${data?.trips ?: 0}", "Trips", RoundedCornerShape(24.dp, 8.dp, 8.dp, 24.dp), c.surfaceContainerHigh, c.onSurface) { nav.go(Trips) }
+            StatTile(hours(data?.onlineSeconds ?: 0), "Online", RoundedCornerShape(8.dp), c.surfaceContainerHigh, c.onSurface, null)
+            StatTile(avg, "Per trip", RoundedCornerShape(8.dp, 24.dp, 24.dp, 8.dp), c.primaryContainer, c.onPrimaryContainer, null)
         }
+        Text("Fares of completed trips. Service fees and tips will show here once they apply.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
 
@@ -160,7 +217,7 @@ fun EarningsScreen(nav: Navigator) {
 private fun RowScope.StatTile(value: String, label: String, shape: RoundedCornerShape, bg: Color, fg: Color, onClick: (() -> Unit)?) {
     Surface(onClick = onClick ?: {}, enabled = onClick != null, shape = shape, color = bg, contentColor = fg, modifier = Modifier.weight(1f)) {
         Column(Modifier.padding(14.dp)) {
-            Text(value, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+            Text(value, fontWeight = FontWeight.ExtraBold, maxLines = 1, autoSize = TextAutoSize.StepBased(minFontSize = 14.sp, maxFontSize = 24.sp))
             Text(label, fontSize = 13.sp, color = if (bg == MaterialTheme.colorScheme.primaryContainer) fg else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -170,9 +227,26 @@ private fun RowScope.StatTile(value: String, label: String, shape: RoundedCorner
 fun TripsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var day by rememberSaveable { mutableIntStateOf(0) }
+    val now = remember { ZonedDateTime.now(zone) }
+    val (from, to) = remember(day) {
+        val today = now.toLocalDate().atStartOfDay(zone)
+        when (day) {
+            0 -> today to now.plusMinutes(1)
+            1 -> today.minusDays(1) to today
+            else -> now.toLocalDate().with(DayOfWeek.MONDAY).atStartOfDay(zone) to now.plusMinutes(1)
+        }
+    }
+    var trips by remember(day) { mutableStateOf<List<DriverTrip>?>(null) }
+    var earn by remember(day) { mutableStateOf<Earnings?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(day) {
+        runCatching { DriverApi.trips(from.toInstant().toString(), to.toInstant().toString(), 200) }
+            .onSuccess { trips = it; error = null }.onFailure { error = errorMessage(it) }
+        runCatching { DriverApi.earnings(from.toInstant().toString(), to.toInstant().toString()) }.onSuccess { earn = it }
+    }
     SubPage("Trips", onBack = { nav.back() }) {
         Row(Modifier.horizontalScroll(rememberScrollState()).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Today", "Yesterday", "Pick a date").forEachIndexed { i, label ->
+            listOf("Today", "Yesterday", "This week").forEachIndexed { i, label ->
                 val on = i == day
                 FilterChip(
                     selected = on, onClick = { day = i },
@@ -185,7 +259,7 @@ fun TripsScreen(nav: Navigator) {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            listOf(Triple("$312.40", "Earned", true), Triple("11", "Trips", false), Triple("6.5h", "Online", false)).forEachIndexed { i, (v, l, hi) ->
+            listOf(Triple(money(earn), "Earned", true), Triple("${earn?.trips ?: 0}", "Trips", false), Triple(hours(earn?.onlineSeconds ?: 0), "Online", false)).forEachIndexed { i, (v, l, hi) ->
                 Column(
                     Modifier.weight(if (i == 0) 1.3f else 1f).clip(when (i) { 0 -> RoundedCornerShape(24.dp, 8.dp, 8.dp, 24.dp); 2 -> RoundedCornerShape(8.dp, 24.dp, 24.dp, 8.dp); else -> RoundedCornerShape(8.dp) })
                         .background(if (hi) NovaTheme.colors.cta else c.surfaceContainerHigh).padding(14.dp),
@@ -195,16 +269,21 @@ fun TripsScreen(nav: Navigator) {
                 }
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            TodayTrips.forEachIndexed { i, t ->
-                Surface(onClick = { nav.go(Complete) }, shape = groupShape(i, TodayTrips.size), color = c.surfaceContainer, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text(t.time, Modifier.width(48.dp), fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = c.onSurfaceVariant)
+        error?.let { Text(it, fontSize = 14.sp, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
+        val list = trips
+        when {
+            list == null && error == null -> LoadingIndicator(Modifier.align(Alignment.CenterHorizontally).size(48.dp), color = c.primary)
+            list != null && list.isEmpty() -> Text("No trips ${listOf("today", "yesterday", "this week")[day]} yet.", fontSize = 15.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp))
+            list != null -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                list.forEachIndexed { i, t ->
+                    val done = t.status == "completed"
+                    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(groupShape(i, list.size)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(local(t.endedAt)?.format(DateTimeFormatter.ofPattern(if (day == 2) "EEE\nH:mm" else "H:mm")) ?: "", Modifier.width(48.dp), fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = c.onSurfaceVariant)
                         Column(Modifier.weight(1f)) {
-                            Text(t.route, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            Text(t.detail, fontSize = 13.sp, color = c.onSurfaceVariant)
+                            Text("${t.pickupName} → ${t.dropoffName}", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            Text(listOfNotNull(t.productName, formatKm(t.distanceMeters), t.riderName, if (!done) (if (t.cancelReason == "rider_no_show") "No-show" else "Cancelled") else null).joinToString(" · "), fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1)
                         }
-                        Text(t.earned, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                        Text(if (done) formatMoney(t.fareCents, t.currency) else "—", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = if (done) c.onSurface else c.onSurfaceVariant)
                     }
                 }
             }
@@ -212,6 +291,7 @@ fun TripsScreen(nav: Navigator) {
     }
 }
 
+/** No bonus programme exists yet; when one does, its quests list here. */
 @Composable
 fun QuestsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
@@ -220,36 +300,15 @@ fun QuestsScreen(nav: Navigator) {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(NovaTheme.colors.onCta)) {
             ShapeBadge(NovaShape.Burst, 200.dp, volt.copy(alpha = 0.12f), Modifier.align(Alignment.TopEnd).offset(60.dp, (-50).dp))
             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("WEEKEND QUEST · ENDS SUN 11:59 PM", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = volt)
-                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("18", fontSize = 64.sp, lineHeight = 64.sp, fontWeight = FontWeight.Black, color = Color.White)
-                    Text("/ 30 trips", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = c.outlineVariant, modifier = Modifier.padding(bottom = 8.dp))
-                }
-                WavyProgress(18 / 30f, color = volt, track = Color.White.copy(alpha = 0.18f))
-                Text(buildAnnotatedString { append("7 more trips unlocks "); withStyle(SpanStyle(color = volt)) { append("+$70") } }, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text("QUESTS", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = volt)
+                Text("No quests running right now", fontSize = 28.sp, lineHeight = 32.sp, fontWeight = FontWeight.Black, color = Color.White)
+                Text("When Nova runs trip bonuses in your city, you'll see them here and get a notification.", fontSize = 15.sp, color = c.outlineVariant)
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).clip(groupShape(0, 3)).background(c.primaryContainer).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                ShapeBadge(NovaShape.Cookie, 40.dp, c.primary) { Icon(NovaIcons.Check, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
-                Text("15 trips", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
-                Text("+$40 earned", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
-            }
-            Row(Modifier.fillMaxWidth().height(64.dp).clip(groupShape(1, 3)).background(c.surfaceContainer).border(2.dp, c.primary, groupShape(1, 3)).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                ShapeBadge(NovaShape.Cookie, 40.dp, c.surfaceContainerHighest) { Text("25", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold) }
-                Text("25 trips", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                Text("+$70", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-            }
-            Row(Modifier.fillMaxWidth().height(64.dp).clip(groupShape(2, 3)).background(c.surfaceContainer).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                ShapeBadge(NovaShape.Cookie, 40.dp, c.surfaceContainerHighest) { Text("30", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = c.onSurfaceVariant) }
-                Text("30 trips", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
-                Text("+$90", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onSurfaceVariant)
-            }
-        }
-        Text("Boost zones today", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+        val week = DriverStore.week
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            BoostTile("1.5×", "Viaduct Harbour", "5–9 PM", c.tertiaryContainer, c.onTertiaryContainer, RoundedCornerShape(28.dp))
-            BoostTile("+$4", "Airport runs", "Per trip, all day", c.secondaryContainer, c.onSecondaryContainer, RoundedCornerShape(28.dp, 28.dp, 28.dp, 8.dp))
+            BoostTile("${week?.trips ?: 0}", "Trips this week", "Counts toward future quests", c.tertiaryContainer, c.onTertiaryContainer, RoundedCornerShape(28.dp))
+            BoostTile(hours(week?.onlineSeconds ?: 0), "Online this week", "Since Monday", c.secondaryContainer, c.onSecondaryContainer, RoundedCornerShape(28.dp, 28.dp, 28.dp, 8.dp))
         }
     }
 }
@@ -266,87 +325,81 @@ private fun RowScope.BoostTile(big: String, title: String, sub: String, bg: Colo
 @Composable
 fun PayoutsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    val scope = rememberCoroutineScope()
-    var state by rememberSaveable { mutableIntStateOf(0) } // 0 ready, 1 sending, 2 sent
     val ink = NovaTheme.colors.onCta
-    val radius by animateDpAsState(if (state > 0) 20.dp else 32.dp, MaterialTheme.motionScheme.fastSpatialSpec())
+    LaunchedEffect(Unit) { DriverStore.refreshEarnings() }
+    val week = DriverStore.week
+    val payout = DriverStore.me?.payout
     TabPage("Wallet", DriverTab.Wallet, nav::tab) {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(NovaTheme.colors.cta)) {
             ShapeBadge(NovaShape.Burst, 180.dp, ink.copy(alpha = 0.07f), Modifier.align(Alignment.TopEnd).offset(40.dp, (-40).dp))
-            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column {
-                    Text("Ready to cash out", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = ink)
-                    Text(if (state == 2) "$0.00" else "$312.40", fontSize = 56.sp, lineHeight = 58.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp, color = ink)
+                    Text("Earned this week", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = ink)
+                    Text(money(week).takeIf { week?.currency != null } ?: formatMoney(0, "NZD").takeIf { false } ?: "No trips yet", fontSize = 48.sp, lineHeight = 52.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp, color = ink, maxLines = 1)
+                    Text("${week?.trips ?: 0} trips · ${hours(week?.onlineSeconds ?: 0)} online", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ink)
                 }
-                Surface(
-                    onClick = { if (state == 0) scope.launch { state = 1; delay(1600); state = 2 } },
-                    shape = RoundedCornerShape(radius), color = if (state == 2) NovaPalette.Mint else ink,
-                    contentColor = if (state == 2) NovaPalette.OnMint else NovaTheme.colors.cta, modifier = Modifier.fillMaxWidth().height(64.dp),
-                ) {
-                    Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                        if (state == 1) { LoadingIndicator(Modifier.size(28.dp), color = NovaTheme.colors.cta); Spacer(Modifier.width(10.dp)) }
-                        if (state == 2) { Icon(NovaIcons.Check, null); Spacer(Modifier.width(8.dp)) }
-                        Text(listOf("Cash out now", "Sending to ANZ…", "Sent · arrives in minutes")[state], fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-                    }
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(ink.copy(alpha = 0.08f)).padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(NovaIcons.Info, null, tint = ink)
+                    Text("Automatic bank payouts are being set up. Every trip is recorded and will be paid out.", fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold, color = ink)
                 }
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(Modifier.fillMaxWidth().clip(groupShape(0, 2)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        Surface(onClick = { nav.go(Bank) }, shape = RoundedCornerShape(20.dp), color = c.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 IconTile(NovaIcons.Bank, c.surfaceContainerHigh, c.onSurface)
-                Column { Text("ANZ ···· 2210", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Auto-payout daily at 11 PM", fontSize = 13.sp, color = c.onSurfaceVariant) }
-            }
-            Row(Modifier.fillMaxWidth().clip(groupShape(1, 2)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.tertiaryContainer), contentAlignment = Alignment.Center) { Text("$", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
-                Column(Modifier.weight(1f)) { Text("Tips today", fontSize = 16.sp, fontWeight = FontWeight.Bold); Text("Included in your payout", fontSize = 13.sp, color = c.onSurfaceVariant) }
-                Text("$18.50", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                Column(Modifier.weight(1f)) {
+                    Text(payout?.let { "${it.accountName} ···· ${it.accountLast4}" } ?: "Add your bank account", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text(payout?.let { "Payouts ${it.payoutSchedule}" + if (it.gstRegistered) " · GST registered" else "" } ?: "Needed to get paid", fontSize = 13.sp, color = c.onSurfaceVariant)
+                }
+                Icon(NovaIcons.Chev, null)
             }
         }
         Text("Recent payouts", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp, top = 4.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            val rows = listOf("Fri 13 Nov" to "$224.80", "Thu 12 Nov" to "$201.60", "Wed 11 Nov" to "$96.40")
-            rows.forEachIndexed { i, (d, a) ->
-                Row(Modifier.fillMaxWidth().clip(groupShape(i, rows.size)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp)) {
-                    Text(d, Modifier.weight(1f), fontSize = 15.sp); Text(a, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
-                }
-            }
-        }
+        Text("No payouts yet.", fontSize = 15.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
     }
 }
-
-private data class InboxItem(val title: String, val body: String, val time: String, val icon: ImageVector, val tone: Int, val unread: Boolean)
 
 @Composable
 fun InboxScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    val tones = listOf(c.tertiaryContainer to c.onTertiaryContainer, c.primaryContainer to c.onPrimaryContainer, c.secondaryContainer to c.onSecondaryContainer, c.errorContainer to c.onErrorContainer)
-    val today = listOf(
-        InboxItem("Viaduct Harbour is busy", "1.5× fares until 9 PM · 6 km from you", "4:52 PM", NovaIcons.Flame, 0, true),
-        InboxItem("Payout sent · $286.50", "Arrives in your ASB account today", "11:02 PM yesterday", NovaIcons.Bank, 1, true),
-        InboxItem("New compliment", "\"Smooth driving\" from Priya", "10:44 AM", NovaIcons.Star, 2, false),
-    )
-    val week = listOf(
-        InboxItem("Certificate of Fitness expires soon", "Renew within 18 days to keep driving", "Wed", NovaIcons.Warning, 3, false),
-        InboxItem("Weekend quest is live", "Up to +$90 for 30 trips", "Mon", NovaIcons.Trophy, 1, false),
-    )
+    var items by remember { mutableStateOf<List<AppNotification>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        runCatching { DriverApi.notifications() }.onSuccess { items = it.first; error = null }.onFailure { error = errorMessage(it) }
+        runCatching { DriverApi.markAllRead() }.onSuccess { DriverStore.markRead() }
+    }
+    val today = ZonedDateTime.now(zone).toLocalDate()
     SubPage("Inbox", onBack = { nav.back() }) {
-        listOf("Today" to today, "This week" to week).forEach { (label, items) ->
-            Text(label, style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
-            SegmentedColumn {
-                items.forEachIndexed { i, n ->
-                    NovaListItem(
-                        i, items.size, n.title, supporting = n.body + "\n" + n.time,
-                        leading = { IconTile(n.icon, tones[n.tone].first, tones[n.tone].second, size = 44.dp, radius = 16.dp) },
-                        trailing = if (n.unread) { { Box(Modifier.size(10.dp).clip(CircleShape).background(c.primary).semantics { contentDescription = "Unread" }) } } else null,
-                        onClick = {
-                            when (n.icon) {
-                                NovaIcons.Flame, NovaIcons.Trophy -> nav.go(Quests)
-                                NovaIcons.Bank -> nav.tab(DriverTab.Wallet)
-                                NovaIcons.Warning -> nav.go(DocExpired)
-                                else -> nav.tab(DriverTab.Profile)
-                            }
-                        },
-                    )
+        error?.let { Text(it, fontSize = 14.sp, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
+        val list = items
+        if (list == null && error == null) LoadingIndicator(Modifier.align(Alignment.CenterHorizontally).size(48.dp), color = c.primary)
+        if (list != null && list.isEmpty()) Text("Nothing here yet. Approvals, document reviews and trip updates show up here.", fontSize = 15.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
+        if (list != null) {
+            list.groupBy { if (local(it.createdAt)?.toLocalDate() == today) "Today" else "Earlier" }.forEach { (label, group) ->
+                Text(label, style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+                SegmentedColumn {
+                    group.forEachIndexed { i, n ->
+                        val (icon, tone) = when {
+                            n.event == "driver_approved" -> NovaIcons.Check to (c.primaryContainer to c.onPrimaryContainer)
+                            n.event == "document_rejected" || n.event == "driver_pending" -> NovaIcons.Warning to (c.errorContainer to c.onErrorContainer)
+                            n.event == "driver_suspended" -> NovaIcons.Shield to (c.errorContainer to c.onErrorContainer)
+                            n.kind == "trip" -> NovaIcons.Car to (c.secondaryContainer to c.onSecondaryContainer)
+                            else -> NovaIcons.Bell to (c.tertiaryContainer to c.onTertiaryContainer)
+                        }
+                        val time = local(n.createdAt)?.format(DateTimeFormatter.ofPattern(if (label == "Today") "h:mm a" else "EEE d MMM, h:mm a")) ?: ""
+                        NovaListItem(
+                            i, group.size, n.title, supporting = listOf(n.body, time).filter { it.isNotBlank() }.joinToString("\n"),
+                            leading = { IconTile(icon, tone.first, tone.second, size = 44.dp, radius = 16.dp) },
+                            trailing = if (n.readAt == null) { { Box(Modifier.size(10.dp).clip(CircleShape).background(c.primary).semantics { contentDescription = "Unread" }) } } else null,
+                            onClick = {
+                                when (n.event) {
+                                    "document_rejected", "driver_pending" -> nav.go(DocExpired)
+                                    "driver_approved" -> nav.reset(Home)
+                                    else -> if (n.kind == "trip") nav.go(Trips)
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -357,48 +410,40 @@ fun InboxScreen(nav: Navigator) {
 @Composable
 fun ProfileScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    LaunchedEffect(Unit) { runCatching { DriverStore.refreshMe() }; DriverStore.refreshEarnings() }
+    val me = DriverStore.me
+    val week = DriverStore.week
+    val since = local(me?.driver?.createdAt)?.year
+    val attention = me?.documents.orEmpty().count { it.required && (it.status == null || it.status == "rejected") }
     TabPage(null, DriverTab.Profile, nav::tab) {
         Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            CookieAvatar(Driver.initials, c.secondaryContainer, NovaPalette.OnCobaltContainer, size = 84.dp, shape = NovaShape.Sunny)
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(Driver.fullName, fontSize = 28.sp, lineHeight = 30.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${Driver.car} · ${Driver.plate}", fontSize = 14.sp, color = c.onSurfaceVariant)
-                Text("Driving with Nova since 2025", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.primary)
+            CookieAvatar(me?.user?.initials ?: "", c.secondaryContainer, NovaPalette.OnCobaltContainer, size = 84.dp, shape = NovaShape.Sunny)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(me?.user?.let { "${it.firstName} ${it.lastName}".trim() } ?: "", fontWeight = FontWeight.ExtraBold, maxLines = 2, autoSize = TextAutoSize.StepBased(minFontSize = 20.sp, maxFontSize = 28.sp))
+                Text(me?.vehicle?.let { "${it.label} · ${it.plate}" } ?: "No car added", fontSize = 14.sp, color = c.onSurfaceVariant, maxLines = 1)
+                since?.let { Text("Driving with Nova since $it", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.primary) }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(Triple(Driver.rating, "Rating", true), Triple("91%", "Acceptance", false), Triple("1,284", "Trips", false)).forEach { (v, l, hi) ->
+            listOf(Triple(money(week).takeIf { week?.currency != null } ?: "—", "This week", true), Triple("${week?.trips ?: 0}", "Trips", false), Triple(hours(week?.onlineSeconds ?: 0), "Online", false)).forEach { (v, l, hi) ->
                 Column(
                     Modifier.weight(1f).clip(RoundedCornerShape(28.dp)).background(if (hi) NovaTheme.colors.cta else c.surfaceContainerHigh).padding(horizontal = 12.dp, vertical = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(v, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = if (hi) NovaTheme.colors.onCta else c.onSurface)
+                    Text(v, fontWeight = FontWeight.ExtraBold, color = if (hi) NovaTheme.colors.onCta else c.onSurface, maxLines = 1, autoSize = TextAutoSize.StepBased(minFontSize = 14.sp, maxFontSize = 28.sp))
                     Text(l, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = if (hi) NovaTheme.colors.onCta else c.onSurfaceVariant)
                 }
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Top compliments", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(Triple("Smooth driving", "214", true), Triple("Clean car", "168", false), Triple("Knew the route", "97", false)).forEach { (t, n, hi) ->
-                    Row(
-                        Modifier.height(36.dp).clip(RoundedCornerShape(10.dp)).background(if (hi) c.primaryContainer else c.surfaceContainerHigh).padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(t, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = if (hi) c.onPrimaryContainer else c.onSurface)
-                        Text(n, fontSize = 14.sp, fontWeight = FontWeight.Black, color = if (hi) c.onPrimaryContainer else c.onSurface)
-                    }
-                }
-            }
-        }
         SegmentedColumn {
-            NovaListItem(0, 3, "Documents", leading = { Icon(NovaIcons.Doc, null) }, trailing = {
-                Box(Modifier.height(24.dp).clip(CircleShape).background(NovaTheme.colors.coralBright).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
-                    Text("1 expiring", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
-                }
+            NovaListItem(0, 4, "Documents", leading = { Icon(NovaIcons.Doc, null) }, trailing = {
+                if (attention > 0) Box(Modifier.height(24.dp).clip(CircleShape).background(NovaTheme.colors.coralBright).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+                    Text("$attention to fix", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer)
+                } else Icon(NovaIcons.Chev, null)
             }, onClick = { nav.go(DocExpired) })
-            NovaListItem(1, 3, "Vehicle", leading = { Icon(NovaIcons.Car, null) }, onClick = { nav.go(Vehicle) })
-            NovaListItem(2, 3, "Trip preferences", leading = { Icon(NovaIcons.Sliders, null) }, onClick = { nav.go(Prefs) })
+            NovaListItem(1, 4, "Vehicle", leading = { Icon(NovaIcons.Car, null) }, onClick = { nav.go(Vehicle) })
+            NovaListItem(2, 4, "Ride types", leading = { Icon(NovaIcons.Sliders, null) }, onClick = { nav.go(Prefs) })
+            NovaListItem(3, 4, "Inbox", leading = { Icon(NovaIcons.Bell, null) }, onClick = { nav.go(Inbox) })
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(Triple("Settings", NovaIcons.Sliders, Settings), Triple("Help", NovaIcons.Help, Help)).forEach { (t, icon, route) ->
@@ -412,91 +457,93 @@ fun ProfileScreen(nav: Navigator) {
     }
 }
 
+/** Ride types the car qualifies for, switchable; types it doesn't qualify for are shown greyed. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PrefsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    val eligible = mapOf("Go" to true, "Comfort" to true, "Electric" to false, "XL" to false)
-    val types = remember { mutableStateListOf("Go", "Comfort") }
-    var km by rememberSaveable { mutableIntStateOf(1) }
-    var pets by rememberSaveable { mutableStateOf(true) }
-    var long by rememberSaveable { mutableStateOf(false) }
-    SubPage("Trip preferences", onBack = { nav.back() }) {
-        Surface(onClick = { nav.goOnline() }, shape = RoundedCornerShape(28.dp), color = NovaTheme.colors.onCta, contentColor = Color.White) {
-            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                ShapeBadge(NovaShape.Cookie, 52.dp, NovaTheme.colors.cta) { Icon(NovaIcons.HomeFilled, null, tint = NovaTheme.colors.onCta) }
-                Column(Modifier.weight(1f)) {
-                    Text("Head home mode", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Only trips toward Mt Albert · 2 of 2 left today", fontSize = 14.sp, color = c.outlineVariant)
-                }
-                Icon(NovaIcons.ArrowRight, null)
-            }
-        }
-        Text("Ride types", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            eligible.forEach { (k, ok) ->
-                val on = k in types
+    val scope = rememberCoroutineScope()
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { DriverStore.loadRules() }
+    val mine = DriverStore.me?.products.orEmpty().associateBy { it.productId }
+    SubPage("Ride types", onBack = { nav.back() }) {
+        Text("Choose which requests you get", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DriverStore.rules.forEach { r ->
+                val p = mine[r.id]
+                val on = p?.enabled == true
                 FilterChip(
-                    selected = on && ok, enabled = ok,
-                    onClick = { if (on) types.remove(k) else types.add(k) },
-                    label = { Text(k, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold) },
-                    leadingIcon = if (on && ok) { { Icon(NovaIcons.Check, null, Modifier.size(FilterChipDefaults.IconSize)) } } else null,
-                    shape = if (on && ok) CircleShape else RoundedCornerShape(12.dp),
+                    selected = on, enabled = p != null,
+                    onClick = {
+                        // At least one type must stay on, or no requests can arrive.
+                        if (on && mine.values.count { it.enabled } <= 1) { error = "Keep at least one ride type on."; return@FilterChip }
+                        scope.launch { runCatching { DriverStore.setProduct(r.id, !on) }.onFailure { error = errorMessage(it) } }
+                    },
+                    label = { Text(r.name, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold) },
+                    leadingIcon = if (on) { { Icon(NovaIcons.Check, null, Modifier.size(FilterChipDefaults.IconSize)) } } else null,
+                    shape = if (on) CircleShape else RoundedCornerShape(12.dp),
                     colors = FilterChipDefaults.filterChipColors(selectedContainerColor = c.primaryContainer, selectedLabelColor = c.onPrimaryContainer, selectedLeadingIconColor = c.onPrimaryContainer),
                     modifier = Modifier.height(44.dp),
                 )
             }
         }
-        Text("Greyed types need a different vehicle.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-6).dp))
-        Text("Max pickup distance", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
-        Row(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf(3, 5, 8, 12).forEachIndexed { i, v ->
-                val on = i == km
-                val r by animateDpAsState(if (on) 22.dp else 10.dp, MaterialTheme.motionScheme.fastSpatialSpec())
-                Box(
-                    Modifier.weight(1f).height(44.dp).clip(RoundedCornerShape(r)).background(if (on) NovaTheme.colors.cta else c.surfaceContainerHighest)
-                        .selectable(on, onClick = { km = i }, role = Role.RadioButton),
-                    contentAlignment = Alignment.Center,
-                ) { Text("$v km", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = if (on) NovaTheme.colors.onCta else c.onSurface) }
-            }
-        }
-        SegmentedColumn {
-            SwitchRow(0, 2, NovaIcons.Paw, "Accept pets", "Riders can request pet-friendly cars", pets) { pets = it }
-            SwitchRow(1, 2, NovaIcons.Route, "Long trips (45+ min)", "Show trips outside Auckland", long) { long = it }
-        }
+        Text("Greyed types need a different vehicle. Change your car in Profile › Vehicle.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
+        error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
     }
 }
 
 @Composable
 fun SettingsScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var navApp by rememberSaveable { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val navApps = listOf("google", "waze")
+    var navApp by rememberSaveable { mutableIntStateOf(navApps.indexOf(NavPrefs.app(context)).coerceAtLeast(0)) }
     var theme by rememberSaveable { mutableIntStateOf(0) }
-    var voice by rememberSaveable { mutableStateOf(true) }
-    var chime by rememberSaveable { mutableStateOf(true) }
+    var chime by rememberSaveable { mutableStateOf(NavPrefs.chime(context)) }
+    var loggingOut by remember { mutableStateOf(false) }
     SubPage("Settings", onBack = { nav.back() }) {
         Group("Navigation app")
-        ConnectedChoice(listOf("Nova", "Google Maps", "Waze"), navApp, { navApp = it })
+        ConnectedChoice(listOf("Google Maps", "Waze"), navApp, { navApp = it; NavPrefs.setApp(context, navApps[it]) })
         Group("Theme")
         ConnectedChoice(listOf("Auto", "Light", "Dark"), theme, { theme = it })
         Text("Auto switches to dark after sunset for night shifts.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-4).dp))
         Group("Sound")
         SegmentedColumn {
-            SwitchRow(0, 2, NovaIcons.Volume, "Voice guidance", "Turn-by-turn directions", voice) { voice = it }
-            SwitchRow(1, 2, NovaIcons.Bell, "Request chime", "Plays even on silent", chime) { chime = it }
+            SwitchRow(0, 1, NovaIcons.Bell, "Request chime", "Plays when a new request arrives", chime) { chime = it; NavPrefs.setChime(context, it) }
         }
         SegmentedColumn {
-            NovaListItem(0, 2, "Trip preferences", supporting = "Ride types, distance, pets", leading = { Icon(NovaIcons.Sliders, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(Prefs) })
-            NovaListItem(1, 2, "Language", supporting = "English (NZ)", leading = { Icon(NovaIcons.Globe, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = {})
+            NovaListItem(0, 2, "Ride types", supporting = "Which requests you get", leading = { Icon(NovaIcons.Sliders, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(Prefs) })
+            NovaListItem(1, 2, "Language", supporting = "Uses your phone's language", leading = { Icon(NovaIcons.Globe, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = {
+                val intent = if (android.os.Build.VERSION.SDK_INT >= 33)
+                    android.content.Intent(android.provider.Settings.ACTION_APP_LOCALE_SETTINGS, android.net.Uri.fromParts("package", context.packageName, null))
+                else android.content.Intent(android.provider.Settings.ACTION_LOCALE_SETTINGS)
+                runCatching { context.startActivity(intent) }
+            })
         }
-        Group("Design preview · edge cases")
-        val edges: List<Pair<String, Route>> = listOf("Rider no-show" to NoShow, "Rider cancelled" to RiderCancelled, "Connection lost on trip" to ConnectionLost, "Document expired" to DocExpired, "SOS active" to SosActive)
-        SegmentedColumn {
-            edges.forEachIndexed { i, (label, route) ->
-                NovaListItem(i, edges.size, label, leading = { Icon(NovaIcons.Warning, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(route) })
+        if (com.nova.driver.BuildConfig.DEBUG) {
+            Group("Design preview · edge cases (debug builds)")
+            val edges: List<Pair<String, Route>> = listOf("Rider no-show" to NoShow, "Rider cancelled" to RiderCancelled, "Connection lost on trip" to ConnectionLost, "Documents" to DocExpired, "SOS" to SosActive)
+            SegmentedColumn {
+                edges.forEachIndexed { i, (label, route) ->
+                    NovaListItem(i, edges.size, label, leading = { Icon(NovaIcons.Warning, null) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(route) })
+                }
             }
         }
-        NovaOutlinedButton("Log out", onClick = { nav.reset(Login) }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp, leadingIcon = NovaIcons.Logout)
+        NovaOutlinedButton(
+            if (loggingOut) "Logging out…" else "Log out", modifier = Modifier.fillMaxWidth().padding(top = 4.dp), height = 52.dp, leadingIcon = NovaIcons.Logout,
+            onClick = {
+                if (loggingOut) return@NovaOutlinedButton
+                loggingOut = true
+                scope.launch {
+                    // Leave dispatch first, then revoke this phone's refresh token on the server.
+                    runCatching { if (DriverStore.state.online) DriverStore.goOffline() }
+                    AuthStore.session?.refreshToken?.let { token -> runCatching { DriverApi.logout(token) } }
+                    AuthStore.clearSession()
+                    nav.reset(Welcome)
+                }
+            },
+        )
     }
 }
 
@@ -515,7 +562,7 @@ fun HelpScreen(nav: Navigator) {
                 IconTile(NovaIcons.Shield, c.error, Color.White, size = 48.dp, radius = 16.dp, iconSize = 22.dp)
                 Column(Modifier.weight(1f)) {
                     Text("In danger? Call 111", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Shares your live location automatically", fontSize = 14.sp)
+                    Text("Opens your dialer with 111", fontSize = 14.sp)
                 }
                 Icon(NovaIcons.Chev, null)
             }
@@ -524,28 +571,20 @@ fun HelpScreen(nav: Navigator) {
             Surface(onClick = { dial(context, "0800668200") }, shape = RoundedCornerShape(28.dp), color = NovaTheme.colors.cta, contentColor = NovaTheme.colors.onCta, modifier = Modifier.weight(1f).height(96.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) { Icon(NovaIcons.Phone, null); Text("Call support · 24/7", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold) }
             }
-            Surface(onClick = { nav.go(Chat) }, shape = RoundedCornerShape(28.dp), color = c.surfaceContainerHigh, modifier = Modifier.weight(1f).height(96.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) { Icon(NovaIcons.Msg, null); Text("Chat with us", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold) }
+            Surface(onClick = { nav.go(Inbox) }, shape = RoundedCornerShape(28.dp), color = c.surfaceContainerHigh, modifier = Modifier.weight(1f).height(96.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) { Icon(NovaIcons.Msg, null); Text("Your inbox", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold) }
             }
-        }
-        Row(Modifier.fillMaxWidth().border(1.dp, c.outlineVariant, RoundedCornerShape(20.dp)).padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(NovaIcons.Receipt, null)
-            Column(Modifier.weight(1f)) {
-                Text("Fare adjustment · #48213", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Toll on Northern Gateway · updated 2h ago", fontSize = 13.sp, color = c.onSurfaceVariant)
-            }
-            Box(Modifier.height(28.dp).clip(CircleShape).background(c.tertiaryContainer).padding(horizontal = 10.dp), contentAlignment = Alignment.Center) { Text("In review", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
         }
         Text("Topics", style = MaterialTheme.typography.labelMedium, color = c.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
         val topics = listOf(
-            Triple("Earnings & payouts", NovaIcons.Wallet, c.primaryContainer to c.onPrimaryContainer),
-            Triple("Account & documents", NovaIcons.Doc, c.secondaryContainer to c.onSecondaryContainer),
-            Triple("Vehicle & insurance", NovaIcons.Car, c.tertiaryContainer to c.onTertiaryContainer),
-            Triple("Report a rider or trip", NovaIcons.Flag, c.surfaceContainerHigh to c.onSurface),
+            Triple("Earnings & payouts", NovaIcons.Wallet, c.primaryContainer to c.onPrimaryContainer) to { nav.tab(DriverTab.Earnings) },
+            Triple("Account & documents", NovaIcons.Doc, c.secondaryContainer to c.onSecondaryContainer) to { nav.go(DocExpired) },
+            Triple("Vehicle & insurance", NovaIcons.Car, c.tertiaryContainer to c.onTertiaryContainer) to { nav.go(Vehicle) },
+            Triple("Trip history", NovaIcons.Flag, c.surfaceContainerHigh to c.onSurface) to { nav.go(Trips) },
         )
         SegmentedColumn {
-            topics.forEachIndexed { i, (t, icon, tone) ->
-                NovaListItem(i, topics.size, t, leading = { IconTile(icon, tone.first, tone.second) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = { nav.go(Chat) })
+            topics.forEachIndexed { i, (t, go) ->
+                NovaListItem(i, topics.size, t.first, leading = { IconTile(t.second, t.third.first, t.third.second) }, trailing = { Icon(NovaIcons.Chev, null) }, onClick = go)
             }
         }
     }

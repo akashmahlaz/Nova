@@ -14,7 +14,8 @@ import kotlinx.serialization.Serializable
 @Serializable data object Otp : Route
 @Serializable data object Vehicle : Route
 @Serializable data object Documents : Route
-@Serializable data object Scan : Route
+/** Photograph or pick one document; [category] matches server driver_document_types. */
+@Serializable data class Scan(val category: String, val title: String) : Route
 @Serializable data object Bank : Route
 @Serializable data object Pending : Route
 

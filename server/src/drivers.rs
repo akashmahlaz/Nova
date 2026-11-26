@@ -53,6 +53,11 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/driver/me", get(me))
         .route("/v1/driver/apply", post(apply))
+        .route("/v1/driver/submit", post(submit))
+        .route("/v1/driver/documents", get(documents))
+        .route("/v1/driver/payout", put(set_payout))
+        .route("/v1/driver/trips", get(trips))
+        .route("/v1/driver/earnings", get(earnings))
         .route("/v1/driver/vehicle", put(set_vehicle))
         .route("/v1/driver/products", put(set_product).get(product_rules))
         .route("/v1/driver/online", post(go_online))
@@ -75,6 +80,7 @@ pub struct DriverProfile {
     licence_number: String,
     licence_expiry: Option<NaiveDate>,
     approved_at: Option<DateTime<Utc>>,
+    review_note: Option<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -107,6 +113,59 @@ pub struct DriverMe {
     /// Ride types the car qualifies for, with the driver's on/off choice.
     products: Vec<DriverProduct>,
     online: bool,
+    /// Required documents and the latest upload of each.
+    documents: Vec<DriverDocument>,
+    /// Where earnings are paid (account number masked).
+    payout: Option<PayoutSummary>,
+}
+
+/// One required document and the driver's latest upload of it (photo in S3, see media.rs).
+#[derive(Serialize, FromRow)]
+pub struct DriverDocument {
+    category: String,
+    name: String,
+    description: String,
+    required: bool,
+    media_id: Option<Uuid>,
+    /// None (not uploaded), uploaded (in review), verified, rejected.
+    status: Option<String>,
+    rejection_reason: Option<String>,
+    uploaded_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct PayoutSummary {
+    account_name: String,
+    /// Last 4 digits only; the full number never goes back to the phone.
+    account_last4: String,
+    gst_registered: bool,
+    payout_schedule: String,
+}
+
+/// Latest non-pending upload per document type (pending = presigned but never uploaded).
+pub(crate) const DOCUMENTS_SQL: &str = "SELECT t.category, t.name, t.description, t.required,
+            m.id AS media_id, m.status, m.rejection_reason, m.created_at AS uploaded_at
+     FROM driver_document_types t
+     LEFT JOIN LATERAL (
+        SELECT id, status, rejection_reason, created_at FROM media_objects
+        WHERE owner_user_id = $1 AND category = t.category AND status <> 'pending'
+        ORDER BY created_at DESC LIMIT 1
+     ) m ON true
+     ORDER BY t.sort_order";
+
+pub(crate) async fn load_documents(st: &AppState, user: Uuid) -> Result<Vec<DriverDocument>, ApiError> {
+    Ok(sqlx::query_as::<_, DriverDocument>(DOCUMENTS_SQL).bind(user).fetch_all(&st.pool).await?)
+}
+
+async fn payout_summary(st: &AppState, user: Uuid) -> Result<Option<PayoutSummary>, ApiError> {
+    Ok(sqlx::query_as::<_, PayoutSummary>(
+        "SELECT account_name, right(regexp_replace(account_number, '[^0-9A-Za-z]', '', 'g'), 4) AS account_last4,
+                gst_registered, payout_schedule
+         FROM driver_payout_accounts WHERE user_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(&st.pool)
+    .await?)
 }
 
 #[derive(Serialize)]
@@ -267,7 +326,7 @@ impl LatLng {
 
 async fn driver_profile(st: &AppState, user: Uuid) -> Result<Option<DriverProfile>, ApiError> {
     Ok(sqlx::query_as::<_, DriverProfile>(
-        "SELECT status, licence_number, licence_expiry, approved_at, created_at FROM drivers WHERE user_id = $1",
+        "SELECT status, licence_number, licence_expiry, approved_at, review_note, created_at FROM drivers WHERE user_id = $1",
     )
     .bind(user)
     .fetch_optional(&st.pool)
@@ -301,8 +360,23 @@ async fn is_online(st: &AppState, user: Uuid) -> Result<bool, ApiError> {
     Ok(alive)
 }
 
+/// One account, one role: only accounts with `users.role = 'driver'` use the driver API. A rider
+/// or admin account signing in to the driver app is refused, so it can't also become a driver.
+async fn require_driver(st: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+    let user = require_user_id(st, headers)?;
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_optional(&st.pool)
+        .await?;
+    match role.as_deref() {
+        Some("driver") => Ok(user),
+        Some(_) => Err(ApiError::Forbidden("not_driver_account")),
+        None => Err(ApiError::Unauthorized),
+    }
+}
+
 async fn me(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<DriverMe>, ApiError> {
-    let user = require_user_id(&st, &headers)?;
+    let user = require_driver(&st, &headers).await?;
     Ok(Json(load_me(&st, user).await?))
 }
 
@@ -313,6 +387,8 @@ async fn load_me(st: &AppState, user: Uuid) -> Result<DriverMe, ApiError> {
         vehicle: active_vehicle(st, user).await?,
         products: products(st, user).await?,
         online: is_online(st, user).await?,
+        documents: load_documents(st, user).await?,
+        payout: payout_summary(st, user).await?,
     })
 }
 
@@ -407,7 +483,7 @@ async fn driver_ride(st: &AppState, driver: Uuid, id: Option<Uuid>) -> Result<Op
 /// What the driver app shows: online or not, an offer to answer, the ride in progress.
 /// The app reads this on start, on every socket (re)connect, and as a slow fallback poll.
 async fn state(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<DriverState>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     Ok(Json(load_state(&st, driver).await?))
 }
 
@@ -437,7 +513,7 @@ pub struct ApplyReq {
 
 /// Starts (or updates, while still pending) a driver application.
 async fn apply(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<ApplyReq>) -> Result<Json<DriverMe>, ApiError> {
-    let user = require_user_id(&st, &headers)?;
+    let user = require_driver(&st, &headers).await?;
     rate_limit(&st, "driver_apply", user, 10, 3600).await?;
     // Riders and support need to reach a driver: a verified phone is required.
     if verified_phone(&st, user).await.is_none() {
@@ -450,10 +526,9 @@ async fn apply(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<A
     if req.licence_expiry.is_some_and(|d| d < Utc::now().date_naive()) {
         return Err(ApiError::BadRequest("licence_expired"));
     }
-    let auto = st.cfg.driver_auto_approve;
     sqlx::query(
-        "INSERT INTO drivers (user_id, licence_number, licence_expiry, status, approved_at)
-         VALUES ($1, $2, $3, CASE WHEN $4 THEN 'approved' ELSE 'pending' END, CASE WHEN $4 THEN now() END)
+        "INSERT INTO drivers (user_id, licence_number, licence_expiry, status)
+         VALUES ($1, $2, $3, 'pending')
          ON CONFLICT (user_id) DO UPDATE SET
             licence_number = EXCLUDED.licence_number,
             licence_expiry = EXCLUDED.licence_expiry,
@@ -463,11 +538,254 @@ async fn apply(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<A
     .bind(user)
     .bind(&licence)
     .bind(req.licence_expiry)
-    .bind(auto)
     .execute(&st.pool)
     .await?;
-    tracing::info!(%user, auto_approved = auto, "driver application");
+    tracing::info!(%user, "driver application saved");
     Ok(Json(load_me(&st, user).await?))
+}
+
+/// Sends the application for review once everything is in: car, every required document
+/// uploaded, payout details. `DRIVER_AUTO_APPROVE=true` (development) approves on the spot.
+async fn submit(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<DriverMe>, ApiError> {
+    let user = require_driver(&st, &headers).await?;
+    rate_limit(&st, "driver_submit", user, 20, 3600).await?;
+    let me = load_me(&st, user).await?;
+    let Some(driver) = &me.driver else { return Err(ApiError::Conflict("not_a_driver")) };
+    if me.vehicle.is_none() {
+        return Err(ApiError::Conflict("vehicle_required"));
+    }
+    let missing = me.documents.iter().any(|d| d.required && !matches!(d.status.as_deref(), Some("uploaded" | "verified")));
+    if missing {
+        return Err(ApiError::Conflict("documents_missing"));
+    }
+    if me.payout.is_none() {
+        return Err(ApiError::Conflict("payout_required"));
+    }
+    if driver.status == "pending" {
+        let auto = st.cfg.driver_auto_approve;
+        sqlx::query(
+            "UPDATE drivers SET submitted_at = now(), updated_at = now(),
+                    status = CASE WHEN $2 THEN 'approved' ELSE status END,
+                    approved_at = CASE WHEN $2 THEN now() ELSE approved_at END
+             WHERE user_id = $1 AND status = 'pending'",
+        )
+        .bind(user)
+        .bind(auto)
+        .execute(&st.pool)
+        .await?;
+        if auto {
+            sqlx::query(
+                "UPDATE media_objects SET status = 'verified', reviewed_at = now(), updated_at = now()
+                 WHERE owner_user_id = $1 AND status = 'uploaded'
+                   AND category IN (SELECT category FROM driver_document_types)",
+            )
+            .bind(user)
+            .execute(&st.pool)
+            .await?;
+        }
+        tracing::info!(%user, auto_approved = auto, "driver application submitted");
+    }
+    Ok(Json(load_me(&st, user).await?))
+}
+
+async fn documents(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Vec<DriverDocument>>, ApiError> {
+    let user = require_driver(&st, &headers).await?;
+    Ok(Json(load_documents(&st, user).await?))
+}
+
+#[derive(Deserialize)]
+pub struct PayoutReq {
+    account_name: String,
+    account_number: String,
+    #[serde(default)]
+    tax_number: String,
+    #[serde(default)]
+    gst_registered: bool,
+    payout_schedule: String,
+}
+
+/// Saves where earnings are paid. Bank formats differ by country, so this checks shape only
+/// (letters, digits, spaces and dashes; 6-34 characters covers local numbers and IBANs).
+async fn set_payout(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<PayoutReq>) -> Result<Json<DriverMe>, ApiError> {
+    let user = require_driver(&st, &headers).await?;
+    rate_limit(&st, "driver_payout", user, 20, 3600).await?;
+    let name: String = req.account_name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(ApiError::BadRequest("invalid_account_name"));
+    }
+    let number = req.account_number.trim().to_uppercase();
+    let compact: String = number.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    if !(6..=34).contains(&compact.len()) || !number.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-') {
+        return Err(ApiError::BadRequest("invalid_account_number"));
+    }
+    let tax = req.tax_number.trim().to_string();
+    if tax.len() > 20 || !tax.chars().all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-') {
+        return Err(ApiError::BadRequest("invalid_tax_number"));
+    }
+    if !matches!(req.payout_schedule.as_str(), "daily" | "weekly" | "instant") {
+        return Err(ApiError::BadRequest("invalid_payout_schedule"));
+    }
+    sqlx::query(
+        "INSERT INTO driver_payout_accounts (user_id, account_name, account_number, tax_number, gst_registered, payout_schedule)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (user_id) DO UPDATE SET
+            account_name = EXCLUDED.account_name, account_number = EXCLUDED.account_number,
+            tax_number = EXCLUDED.tax_number, gst_registered = EXCLUDED.gst_registered,
+            payout_schedule = EXCLUDED.payout_schedule, updated_at = now()",
+    )
+    .bind(user)
+    .bind(&name)
+    .bind(&number)
+    .bind(&tax)
+    .bind(req.gst_registered)
+    .bind(&req.payout_schedule)
+    .execute(&st.pool)
+    .await?;
+    Ok(Json(load_me(&st, user).await?))
+}
+
+// ---------- trips and earnings ----------
+
+#[derive(Serialize, FromRow)]
+pub struct DriverTrip {
+    id: Uuid,
+    status: String,
+    product_name: String,
+    currency: String,
+    fare_cents: i64,
+    distance_meters: i64,
+    pickup_name: String,
+    dropoff_name: String,
+    rider_name: String,
+    cancel_reason: Option<String>,
+    accepted_at: Option<DateTime<Utc>>,
+    started_at: Option<DateTime<Utc>>,
+    ended_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Deserialize)]
+pub struct RangeQuery {
+    /// Inclusive start, exclusive end (the app sends local midnights as UTC instants).
+    from: Option<DateTime<Utc>>,
+    to: Option<DateTime<Utc>>,
+    limit: Option<i64>,
+}
+
+const TRIP_SELECT: &str = "SELECT r.id, r.status, p.name AS product_name, r.currency, r.fare_cents, r.distance_meters,
+        r.pickup_name, r.dropoff_name, COALESCE(r.passenger_name, u.first_name) AS rider_name,
+        r.cancel_reason, r.accepted_at, r.started_at, COALESCE(r.ended_at, r.completed_at) AS ended_at
+     FROM rides r JOIN ride_products p ON p.id = r.product_id JOIN users u ON u.id = r.rider_id";
+
+/// Finished trips (completed or cancelled after accepting), newest first.
+async fn trips(State(st): State<AppState>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<RangeQuery>) -> Result<Json<Vec<DriverTrip>>, ApiError> {
+    let driver = require_driver(&st, &headers).await?;
+    let rows = sqlx::query_as::<_, DriverTrip>(&format!(
+        "{TRIP_SELECT}
+         WHERE r.driver_id = $1 AND r.status IN ('completed', 'cancelled')
+           AND ($2::timestamptz IS NULL OR COALESCE(r.ended_at, r.completed_at) >= $2)
+           AND ($3::timestamptz IS NULL OR COALESCE(r.ended_at, r.completed_at) < $3)
+         ORDER BY COALESCE(r.ended_at, r.completed_at) DESC NULLS LAST LIMIT $4"
+    ))
+    .bind(driver)
+    .bind(q.from)
+    .bind(q.to)
+    .bind(q.limit.unwrap_or(50).clamp(1, 500))
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(Json(rows))
+}
+
+#[derive(Serialize)]
+pub struct Earnings {
+    /// Currency of the driver's most recent trip in the range (one driver works one area).
+    currency: Option<String>,
+    total_cents: i64,
+    trips: i64,
+    online_seconds: i64,
+    /// Completed trips in the range, for the app to chart by hour/day/week in local time.
+    rides: Vec<EarningPoint>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct EarningPoint {
+    completed_at: DateTime<Utc>,
+    fare_cents: i64,
+    currency: String,
+}
+
+/// Fares of completed trips in [from, to) plus hours online. No commission model exists yet,
+/// so this is the fare total; a service fee becomes one more column here when it does.
+async fn earnings(State(st): State<AppState>, headers: HeaderMap, axum::extract::Query(q): axum::extract::Query<RangeQuery>) -> Result<Json<Earnings>, ApiError> {
+    let driver = require_driver(&st, &headers).await?;
+    let from = q.from.unwrap_or_else(|| Utc::now() - chrono::Duration::days(1));
+    let to = q.to.unwrap_or_else(Utc::now);
+    if to <= from || to - from > chrono::Duration::days(62) {
+        return Err(ApiError::BadRequest("invalid_range"));
+    }
+    let rides = sqlx::query_as::<_, EarningPoint>(
+        "SELECT completed_at, fare_cents, currency FROM rides
+         WHERE driver_id = $1 AND status = 'completed' AND completed_at >= $2 AND completed_at < $3
+         ORDER BY completed_at",
+    )
+    .bind(driver)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&st.pool)
+    .await?;
+    let currency = rides.last().map(|r| r.currency.clone());
+    let total_cents = rides.iter().filter(|r| Some(&r.currency) == currency.as_ref()).map(|r| r.fare_cents).sum();
+    // Overlap of each shift with the range; open shifts count up to their last heartbeat.
+    let online_seconds: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(sum(extract(epoch FROM least(COALESCE(ended_at, last_seen_at), $3) - greatest(started_at, $2))), 0)::bigint
+         FROM driver_shifts
+         WHERE driver_id = $1 AND started_at < $3 AND COALESCE(ended_at, last_seen_at) > $2",
+    )
+    .bind(driver)
+    .bind(from)
+    .bind(to)
+    .fetch_one(&st.pool)
+    .await?;
+    Ok(Json(Earnings { currency, total_cents, trips: rides.len() as i64, online_seconds, rides }))
+}
+
+// ---------- shifts (hours online) ----------
+
+async fn shift_started(st: &AppState, driver: Uuid) {
+    // Close a shift whose app went quiet, then open one unless a live one exists.
+    let res = sqlx::query(
+        "WITH stale AS (
+            UPDATE driver_shifts SET ended_at = last_seen_at
+            WHERE driver_id = $1 AND ended_at IS NULL AND last_seen_at < now() - interval '2 minutes'
+         )
+         INSERT INTO driver_shifts (id, driver_id) SELECT $2, $1
+         WHERE NOT EXISTS (SELECT 1 FROM driver_shifts WHERE driver_id = $1 AND ended_at IS NULL AND last_seen_at >= now() - interval '2 minutes')
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(driver)
+    .bind(Uuid::now_v7())
+    .execute(&st.pool)
+    .await;
+    if let Err(err) = res {
+        tracing::warn!(error = ?err, %driver, "could not start shift");
+    }
+}
+
+async fn shift_seen(st: &AppState, driver: Uuid) {
+    // At most one write every 30 s per driver, not one per GPS fix.
+    let _ = sqlx::query(
+        "UPDATE driver_shifts SET last_seen_at = now()
+         WHERE driver_id = $1 AND ended_at IS NULL AND last_seen_at < now() - interval '30 seconds'",
+    )
+    .bind(driver)
+    .execute(&st.pool)
+    .await;
+}
+
+async fn shift_ended(st: &AppState, driver: Uuid) {
+    let _ = sqlx::query("UPDATE driver_shifts SET ended_at = now(), last_seen_at = now() WHERE driver_id = $1 AND ended_at IS NULL")
+        .bind(driver)
+        .execute(&st.pool)
+        .await;
 }
 
 #[derive(Deserialize)]
@@ -495,7 +813,7 @@ fn text(value: &str, max: usize) -> Result<String, ApiError> {
 /// Sets the driver's car. A change retires the old row (rides keep their car) and recomputes
 /// which ride types the driver can take.
 async fn set_vehicle(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<VehicleReq>) -> Result<Json<DriverMe>, ApiError> {
-    let user = require_user_id(&st, &headers)?;
+    let user = require_driver(&st, &headers).await?;
     rate_limit(&st, "driver_vehicle", user, 20, 3600).await?;
     let make = text(&req.make, 40)?;
     let model = text(&req.model, 40)?;
@@ -588,7 +906,7 @@ pub struct ProductReq {
 
 /// Turns one ride type on or off (only types the car qualifies for exist here).
 async fn set_product(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<ProductReq>) -> Result<Json<DriverMe>, ApiError> {
-    let user = require_user_id(&st, &headers)?;
+    let user = require_driver(&st, &headers).await?;
     let done = sqlx::query("UPDATE driver_products SET enabled = $3 WHERE driver_id = $1 AND product_id = $2")
         .bind(user)
         .bind(&req.product_id)
@@ -634,7 +952,7 @@ async fn record_position(st: &AppState, driver: Uuid, at: &LatLng, available: bo
 }
 
 async fn go_online(State(st): State<AppState>, headers: HeaderMap, Json(at): Json<LatLng>) -> Result<Json<DriverState>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     at.check()?;
     rate_limit(&st, "driver_online", driver, 60, 3600).await?;
     match driver_profile(&st, driver).await? {
@@ -650,6 +968,7 @@ async fn go_online(State(st): State<AppState>, headers: HeaderMap, Json(at): Jso
         return Err(ApiError::Conflict("no_ride_types"));
     }
     record_position(&st, driver, &at, true).await?;
+    shift_started(&st, driver).await;
     tracing::info!(%driver, "driver online");
     // Rides already waiting nearby get a chance at this driver right away.
     dispatch::wake_all(&st);
@@ -657,7 +976,7 @@ async fn go_online(State(st): State<AppState>, headers: HeaderMap, Json(at): Jso
 }
 
 async fn go_offline(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<DriverState>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     let mut redis = st.redis.clone();
     let _: () = redis::pipe()
         .cmd("ZREM").arg(ONLINE_KEY).arg(driver.to_string()).ignore()
@@ -675,6 +994,7 @@ async fn go_offline(State(st): State<AppState>, headers: HeaderMap) -> Result<Js
     for ride in declined {
         st.dispatch.wake(ride);
     }
+    shift_ended(&st, driver).await;
     tracing::info!(%driver, "driver offline");
     Ok(Json(load_state(&st, driver).await?))
 }
@@ -682,18 +1002,21 @@ async fn go_offline(State(st): State<AppState>, headers: HeaderMap) -> Result<Js
 /// Heartbeat + position. Keeps an online driver in the search set; during a ride it feeds the
 /// rider's map even if the driver went offline for new offers.
 async fn location(State(st): State<AppState>, headers: HeaderMap, Json(at): Json<LatLng>) -> Result<Json<serde_json::Value>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     at.check()?;
     rate_limit(&st, "driver_location", driver, 120, 60).await?;
     let online = is_online(&st, driver).await?;
     record_position(&st, driver, &at, online).await?;
+    if online {
+        shift_seen(&st, driver).await;
+    }
     Ok(Json(json!({ "online": online })))
 }
 
 // ---------- offers ----------
 
 async fn accept(State(st): State<AppState>, headers: HeaderMap, Path(offer): Path<Uuid>) -> Result<Json<DriverRide>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     let mut tx = st.pool.begin().await?;
     let ride: Option<Uuid> = sqlx::query_scalar(
         "UPDATE ride_offers SET response = 'accepted', responded_at = now()
@@ -750,7 +1073,7 @@ async fn accept(State(st): State<AppState>, headers: HeaderMap, Path(offer): Pat
 }
 
 async fn decline(State(st): State<AppState>, headers: HeaderMap, Path(offer): Path<Uuid>) -> Result<Json<DriverState>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     let ride: Option<Uuid> = sqlx::query_scalar(
         "UPDATE ride_offers SET response = 'declined', responded_at = now()
          WHERE id = $1 AND driver_id = $2 AND response IS NULL RETURNING ride_id",
@@ -778,7 +1101,7 @@ async fn step(st: &AppState, driver: Uuid, ride: Uuid, sql: &str) -> Result<Driv
 }
 
 async fn arrived(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<DriverRide>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     let ride = step(&st, driver, id,
         "UPDATE rides SET status = 'arriving', arrived_at = now(), updated_at = now()
          WHERE id = $1 AND driver_id = $2 AND status = 'accepted'").await?;
@@ -800,7 +1123,7 @@ async fn start(
     Path(id): Path<Uuid>,
     body: Option<Json<StartReq>>,
 ) -> Result<Json<DriverRide>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     // Ten tries an hour: enough for typos, far too few to guess 1 in 10,000.
     rate_limit(&st, "trip_pin", driver, 10, 3600).await?;
     let pin = body.and_then(|Json(b)| b.pin).unwrap_or_default();
@@ -823,7 +1146,7 @@ async fn start(
 }
 
 async fn complete(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<DriverRide>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     let ride = step(&st, driver, id,
         "UPDATE rides SET status = 'completed', completed_at = now(), ended_at = now(), updated_at = now()
          WHERE id = $1 AND driver_id = $2 AND status = 'in_progress'").await?;
@@ -848,7 +1171,7 @@ async fn cancel(
     Path(id): Path<Uuid>,
     body: Option<Json<CancelReq>>,
 ) -> Result<Json<DriverState>, ApiError> {
-    let driver = require_user_id(&st, &headers)?;
+    let driver = require_driver(&st, &headers).await?;
     rate_limit(&st, "driver_cancel", driver, 10, 3600).await?;
     let reason = body.and_then(|Json(b)| b.reason).map(|r| r.trim().chars().take(200).collect::<String>());
     if reason.as_deref() == Some("no_show") {

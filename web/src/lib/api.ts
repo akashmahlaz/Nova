@@ -28,7 +28,64 @@ export interface Session {
   user: User
 }
 
+/** An account as the console sees it: profile plus status and history counts. */
+export interface AdminUser extends User {
+  deactivated_at: string | null
+  deactivated_reason: string | null
+  rides_count: number
+  has_driver_profile: boolean
+}
+
+export interface AuditEntry {
+  id: string
+  admin_id: string
+  admin_name: string
+  action: string
+  target_type: 'user' | 'driver' | 'media' | 'service_area' | 'ride'
+  target_id: string
+  summary: string
+  reason: string | null
+  created_at: string
+}
+
+export interface AdminRideDetail {
+  id: string
+  status: string
+  product_id: string
+  service_area_name: string
+  rider_id: string
+  rider_name: string
+  rider_phone: string | null
+  passenger_name: string | null
+  driver_id: string | null
+  driver_name: string | null
+  driver_phone: string | null
+  vehicle: string | null
+  pickup_name: string
+  pickup_address: string
+  dropoff_name: string
+  dropoff_address: string
+  currency: string
+  fare_cents: number
+  surge_multiplier: number
+  distance_meters: number
+  duration_seconds: number
+  payment_method: string
+  cancel_reason: string | null
+  scheduled_at: string | null
+  created_at: string
+  accepted_at: string | null
+  arrived_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  ended_at: string | null
+  offers_sent: number
+  offers_declined: number
+}
+
 export interface DailyRidePoint {
+  /** YYYY-MM-DD */
+  date: string
   day: string
   total: number
   completed: number
@@ -63,6 +120,9 @@ export interface AdminOverview {
   s3_configured: boolean
   s3_bucket: string | null
   s3_region: string | null
+  /** Drivers with a live heartbeat in dispatch right now. */
+  online_drivers: number
+  /** Last 14 days, oldest first. */
   daily_rides: DailyRidePoint[]
 }
 
@@ -75,11 +135,67 @@ export interface AdminDriver {
   licence_number: string
   licence_expiry: string | null
   vehicle: string | null
+  submitted_at: string | null
+  docs_ready: number
+  docs_required: number
   created_at: string
+}
+
+export interface AdminDriverDoc {
+  category: string
+  name: string
+  description: string
+  required: boolean
+  media_id: string | null
+  status: 'pending' | 'uploaded' | 'verified' | 'rejected' | null
+  rejection_reason: string | null
+  uploaded_at: string | null
+  content_type: string | null
+  view_url: string | null
+}
+
+export interface AdminDriverDetail {
+  driver: {
+    user_id: string
+    first_name: string
+    last_name: string
+    phone_e164: string | null
+    email: string | null
+    status: 'pending' | 'approved' | 'suspended'
+    licence_number: string
+    licence_expiry: string | null
+    submitted_at: string | null
+    approved_at: string | null
+    review_note: string | null
+    created_at: string
+  }
+  vehicle: {
+    make: string
+    model: string
+    color: string
+    plate: string
+    year: number
+    seats: number
+    is_electric: boolean
+    wheelchair_accessible: boolean
+  } | null
+  products: string[]
+  payout: {
+    account_name: string
+    account_number: string
+    tax_number: string
+    gst_registered: boolean
+    payout_schedule: string
+  } | null
+  documents: AdminDriverDoc[]
+  completed_trips: number
+  ready_for_approval: boolean
 }
 
 export interface AdminRide {
   id: string
+  rider_id: string
+  driver_id: string | null
   status: string
   product_id: string
   service_area_name: string
@@ -117,6 +233,8 @@ export interface AdminMediaItem {
   category:
     | 'avatar'
     | 'driver_licence'
+    | 'driver_endorsement'
+    | 'driver_photo'
     | 'driver_insurance'
     | 'vehicle_reg'
     | 'support_attachment'
@@ -165,6 +283,40 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * One refresh at a time. Refresh tokens rotate and the server treats a reused one as stolen
+ * (it revokes every session of the account), so parallel 401s must share a single refresh
+ * instead of each spending the same token. Only a definite rejection signs the admin out;
+ * a network blip keeps the stored session for the next try.
+ */
+let refreshing: Promise<Session | null> | null = null
+
+function refreshSession(refreshToken: string): Promise<Session | null> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/v1/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        })
+        if (res.ok) {
+          const next = (await res.json()) as Session
+          saveStoredSession(next)
+          return next
+        }
+        if (res.status === 401 || res.status === 403) saveStoredSession(null)
+        return null
+      } catch {
+        return null
+      } finally {
+        refreshing = null
+      }
+    })()
+  }
+  return refreshing
+}
+
 async function requestJson<T>(
   path: string,
   options: RequestInit = {},
@@ -183,18 +335,10 @@ async function requestJson<T>(
   let res = await fetch(`${API_BASE}${path}`, { ...options, headers })
 
   if (res.status === 401 && auth && session?.refresh_token) {
-    const refreshRes = await fetch(`${API_BASE}/v1/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ refresh_token: session.refresh_token }),
-    })
-    if (refreshRes.ok) {
-      const next = (await refreshRes.json()) as Session
-      saveStoredSession(next)
+    const next = await refreshSession(session.refresh_token)
+    if (next) {
       headers.set('Authorization', `Bearer ${next.access_token}`)
       res = await fetch(`${API_BASE}${path}`, { ...options, headers })
-    } else {
-      saveStoredSession(null)
     }
   }
 
@@ -233,7 +377,25 @@ export const novaAdminApi = {
 
   getOverview: () => requestJson<AdminOverview>('/v1/admin/overview', {}, true),
 
-  listUsers: () => requestJson<User[]>('/v1/admin/users', {}, true),
+  listUsers: () => requestJson<AdminUser[]>('/v1/admin/users', {}, true),
+
+  /** Signs the account out everywhere and blocks sign-in. History is kept. */
+  deactivateUser: (userId: string, reason: string) =>
+    requestJson<void>(`/v1/admin/users/${userId}/deactivate`, { method: 'POST', body: JSON.stringify({ reason }) }, true),
+
+  reactivateUser: (userId: string, reason: string) =>
+    requestJson<void>(`/v1/admin/users/${userId}/reactivate`, { method: 'POST', body: JSON.stringify({ reason }) }, true),
+
+  listAudit: (params: { target_type?: AuditEntry['target_type']; target_id?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.target_type) q.set('target_type', params.target_type)
+    if (params.target_id) q.set('target_id', params.target_id)
+    if (params.limit) q.set('limit', String(params.limit))
+    const qs = q.toString()
+    return requestJson<AuditEntry[]>(`/v1/admin/audit${qs ? `?${qs}` : ''}`, {}, true)
+  },
+
+  getRide: (id: string) => requestJson<AdminRideDetail>(`/v1/admin/rides/${id}`, {}, true),
 
   updateRole: (userId: string, role: 'rider' | 'driver' | 'admin') =>
     requestJson<User>(
@@ -273,15 +435,21 @@ export const novaAdminApi = {
       true,
     ),
 
-  deleteUser: (userId: string) =>
-    requestJson<void>(`/v1/admin/users/${userId}`, { method: 'DELETE' }, true),
 
   listDrivers: () => requestJson<AdminDriver[]>('/v1/admin/drivers', {}, true),
 
-  updateDriverStatus: (userId: string, status: 'pending' | 'approved' | 'suspended') =>
+  getDriver: (userId: string) =>
+    requestJson<AdminDriverDetail>(`/v1/admin/drivers/${userId}`, {}, true),
+
+  /** `note` is shown to the driver when an application is sent back or an account is suspended. */
+  updateDriverStatus: (
+    userId: string,
+    status: 'pending' | 'approved' | 'suspended',
+    note?: string,
+  ) =>
     requestJson<void>(
       `/v1/admin/drivers/${userId}`,
-      { method: 'PATCH', body: JSON.stringify({ status }) },
+      { method: 'PATCH', body: JSON.stringify({ status, note: note?.trim() || null }) },
       true,
     ),
 
