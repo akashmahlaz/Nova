@@ -79,6 +79,9 @@ pub struct DriverProfile {
     status: String,
     licence_number: String,
     licence_expiry: Option<NaiveDate>,
+    city: Option<String>,
+    country_code: Option<String>,
+    has_passenger_licence: bool,
     approved_at: Option<DateTime<Utc>>,
     review_note: Option<String>,
     created_at: DateTime<Utc>,
@@ -326,7 +329,7 @@ impl LatLng {
 
 async fn driver_profile(st: &AppState, user: Uuid) -> Result<Option<DriverProfile>, ApiError> {
     Ok(sqlx::query_as::<_, DriverProfile>(
-        "SELECT status, licence_number, licence_expiry, approved_at, review_note, created_at FROM drivers WHERE user_id = $1",
+        "SELECT status, licence_number, licence_expiry, city, country_code, has_passenger_licence, approved_at, review_note, created_at FROM drivers WHERE user_id = $1",
     )
     .bind(user)
     .fetch_optional(&st.pool)
@@ -509,6 +512,9 @@ pub(crate) async fn last_location(st: &AppState, driver: Uuid) -> Option<(f64, f
 pub struct ApplyReq {
     licence_number: String,
     licence_expiry: Option<NaiveDate>,
+    city: Option<String>,
+    country_code: Option<String>,
+    has_passenger_licence: Option<bool>,
 }
 
 /// Starts (or updates, while still pending) a driver application.
@@ -526,18 +532,32 @@ async fn apply(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<A
     if req.licence_expiry.is_some_and(|d| d < Utc::now().date_naive()) {
         return Err(ApiError::BadRequest("licence_expired"));
     }
+    let city = req.city.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(100).collect::<String>());
+    let country_code = req
+        .country_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()))
+        .map(|c| c.to_ascii_uppercase());
+    let has_passenger_licence = req.has_passenger_licence.unwrap_or(false);
     sqlx::query(
-        "INSERT INTO drivers (user_id, licence_number, licence_expiry, status)
-         VALUES ($1, $2, $3, 'pending')
+        "INSERT INTO drivers (user_id, licence_number, licence_expiry, city, country_code, has_passenger_licence, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
          ON CONFLICT (user_id) DO UPDATE SET
             licence_number = EXCLUDED.licence_number,
             licence_expiry = EXCLUDED.licence_expiry,
+            city = COALESCE(EXCLUDED.city, drivers.city),
+            country_code = COALESCE(EXCLUDED.country_code, drivers.country_code),
+            has_passenger_licence = EXCLUDED.has_passenger_licence,
             updated_at = now()
          WHERE drivers.status = 'pending'",
     )
     .bind(user)
     .bind(&licence)
     .bind(req.licence_expiry)
+    .bind(city)
+    .bind(country_code)
+    .bind(has_passenger_licence)
     .execute(&st.pool)
     .await?;
     tracing::info!(%user, "driver application saved");

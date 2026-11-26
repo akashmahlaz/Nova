@@ -18,12 +18,15 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** What the sign-up / log-in screens collected, kept in memory until the code is verified. */
 data class SignInDraft(
-    /** E.164, e.g. +64221234567. */
+    /** E.164, e.g. +919876543210. */
     val phone: String = "",
     /** "signup" creates the Nova account after the code; "login" signs into an existing one. */
     val purpose: String = "login",
     val firstName: String = "",
     val lastName: String = "",
+    val city: String = "",
+    val countryCode: String = "",
+    val hasPassengerLicence: Boolean = false,
     val destinationHint: String = "",
     val resendIn: Int = 30,
 )

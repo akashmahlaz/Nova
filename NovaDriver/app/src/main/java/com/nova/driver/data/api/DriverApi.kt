@@ -268,10 +268,50 @@ object DriverApi {
 
     suspend fun me(): DriverMe = io { request("GET", "/v1/driver/me").decode(DriverMe.serializer()) }
 
-    suspend fun apply(licenceNumber: String, licenceExpiry: String?): DriverMe = io {
+    @Serializable
+    data class CityOption(
+        val name: String,
+        val region: String = "",
+        @SerialName("country_code") val countryCode: String = "",
+    )
+
+    suspend fun cities(
+        country: String,
+        query: String = "",
+        lat: Double? = null,
+        lng: Double? = null,
+        countryName: String? = null,
+    ): List<CityOption> = io {
+        val params = buildList {
+            if (country.isNotBlank()) add("country=${enc(country)}")
+            if (!countryName.isNullOrBlank()) add("country_name=${enc(countryName)}")
+            if (query.isNotBlank()) add("q=${enc(query)}")
+            if (lat != null && lng != null) {
+                add("lat=$lat")
+                add("lng=$lng")
+            }
+        }.joinToString("&")
+        val path = if (params.isEmpty()) "/v1/geo/cities" else "/v1/geo/cities?$params"
+        val res = request("GET", path, auth = false).jsonObject
+        json.decodeFromJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(CityOption.serializer()),
+            res.getValue("cities"),
+        )
+    }
+
+    suspend fun apply(
+        licenceNumber: String,
+        licenceExpiry: String?,
+        city: String? = null,
+        countryCode: String? = null,
+        hasPassengerLicence: Boolean = false,
+    ): DriverMe = io {
         request("POST", "/v1/driver/apply", buildJsonObject {
             put("licence_number", licenceNumber)
             licenceExpiry?.let { put("licence_expiry", it) }
+            city?.takeIf { it.isNotBlank() }?.let { put("city", it) }
+            countryCode?.takeIf { it.isNotBlank() }?.let { put("country_code", it) }
+            put("has_passenger_licence", hasPassengerLicence)
         }).decode(DriverMe.serializer())
     }
 

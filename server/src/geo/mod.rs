@@ -69,6 +69,7 @@ const QUOTE_TTL_SECS: u64 = 5 * 60;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/geo/autocomplete", post(autocomplete))
+        .route("/v1/geo/cities", get(cities))
         .route("/v1/geo/places/{place_id}", get(place_details))
         .route("/v1/geo/reverse", get(reverse))
         .route("/v1/geo/nearby", get(nearby))
@@ -237,6 +238,206 @@ async fn autocomplete(
     )
     .await?;
     Ok(Json(AutocompleteRes { suggestions }))
+}
+
+#[derive(Deserialize)]
+pub struct CitiesQuery {
+    country: Option<String>,
+    country_name: Option<String>,
+    q: Option<String>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    session_token: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct CityItem {
+    name: String,
+    region: String,
+    country_code: String,
+}
+
+#[derive(Serialize)]
+pub struct CitiesRes {
+    cities: Vec<CityItem>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct IpGeo {
+    lat: f64,
+    lng: f64,
+    city: String,
+    region: String,
+    country_code: String,
+}
+
+fn extract_client_ip(headers: &HeaderMap) -> Option<String> {
+    let raw = headers
+        .get("cf-connecting-ip")
+        .or_else(|| headers.get("x-real-ip"))
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())?;
+    let first = raw.split(',').next()?.trim();
+    let ip: std::net::IpAddr = first.parse().ok()?;
+    let is_private = match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
+    };
+    if is_private { None } else { Some(ip.to_string()) }
+}
+
+async fn resolve_ip_geo(st: &AppState, headers: &HeaderMap) -> Option<IpGeo> {
+    let client_ip = extract_client_ip(headers);
+    let cache_key = format!("nova:ipgeo:{}", client_ip.as_deref().unwrap_or("self"));
+    let mut redis = st.redis.clone();
+    if let Ok(Some(cached)) = redis.get::<_, Option<String>>(&cache_key).await {
+        if let Ok(parsed) = serde_json::from_str::<IpGeo>(&cached) {
+            return Some(parsed);
+        }
+    }
+    let url = match &client_ip {
+        Some(ip) => format!("https://ipwho.is/{ip}"),
+        None => "https://ipwho.is/".to_string(),
+    };
+    let resp = st
+        .http
+        .get(url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
+        return None;
+    }
+    let lat = v.get("latitude").and_then(|x| x.as_f64())?;
+    let lng = v.get("longitude").and_then(|x| x.as_f64())?;
+    let city = v.get("city").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let region = v.get("region").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    let country_code = v.get("country_code").and_then(|x| x.as_str()).unwrap_or("").trim().to_ascii_uppercase();
+    let geo = IpGeo { lat, lng, city, region, country_code };
+    if let Ok(json_str) = serde_json::to_string(&geo) {
+        let _: Result<(), _> = redis.set_ex(&cache_key, json_str, 6 * 3600).await;
+    }
+    Some(geo)
+}
+
+/// Worldwide city search for driver onboarding:
+/// - `q` present -> Google Places `(cities)` autocomplete filtered by `country`
+/// - `q` empty + `lat`/`lng` present -> Google Places `searchNearby` (`locality`) around GPS
+/// - `q` empty + no GPS -> IP geolocation (`ipwho.is`, cached in Redis) + `searchNearby` when in
+///   the same country, falling back to `searchText` (`locality`) for `country_name` / `country`
+async fn cities(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<CitiesQuery>,
+) -> Result<Json<CitiesRes>, ApiError> {
+    rate_limit(&st, "geo_cities", Uuid::nil(), 240, 60).await?;
+    let country = query
+        .country
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()))
+        .map(|c| c.to_ascii_uppercase());
+    let q = query.q.as_deref().map(str::trim).unwrap_or("");
+    let key = maps_key(&st)?;
+
+    if q.is_empty() {
+        let gps = match (query.lat, query.lng) {
+            (Some(lat), Some(lng)) if (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lng) => Some((lat, lng)),
+            _ => None,
+        };
+        let ip_geo = if gps.is_none() { resolve_ip_geo(&st, &headers).await } else { None };
+        let ip_matches_country = match (&ip_geo, &country) {
+            (Some(g), Some(c)) => g.country_code.is_empty() || g.country_code == *c,
+            (Some(_), None) => true,
+            _ => false,
+        };
+
+        let mut cities: Vec<CityItem> = if let Some((lat, lng)) = gps {
+            google::nearby_cities(&st.http, key, lat, lng)
+                .await?
+                .into_iter()
+                .map(|p| CityItem {
+                    name: p.name,
+                    region: p.region,
+                    country_code: country.clone().unwrap_or_default(),
+                })
+                .collect()
+        } else if let (Some(g), true) = (&ip_geo, ip_matches_country) {
+            let mut list: Vec<CityItem> = google::nearby_cities(&st.http, key, g.lat, g.lng)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| CityItem {
+                    name: p.name,
+                    region: p.region,
+                    country_code: country.clone().unwrap_or_else(|| g.country_code.clone()),
+                })
+                .collect();
+            if !g.city.is_empty() && !list.iter().any(|c| c.name.eq_ignore_ascii_case(&g.city)) {
+                list.insert(
+                    0,
+                    CityItem {
+                        name: g.city.clone(),
+                        region: g.region.clone(),
+                        country_code: country.clone().unwrap_or_else(|| g.country_code.clone()),
+                    },
+                );
+            }
+            list
+        } else {
+            let cname = query
+                .country_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or(country.as_deref())
+                .unwrap_or("India");
+            google::country_cities(&st.http, key, cname, country.as_deref())
+                .await?
+                .into_iter()
+                .map(|p| CityItem {
+                    name: p.name,
+                    region: p.region,
+                    country_code: country.clone().unwrap_or_default(),
+                })
+                .collect()
+        };
+        if cities.is_empty() {
+            if let Some(g) = ip_geo.filter(|_| ip_matches_country) {
+                if !g.city.is_empty() {
+                    cities.push(CityItem {
+                        name: g.city,
+                        region: g.region,
+                        country_code: country.unwrap_or(g.country_code),
+                    });
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        cities.retain(|c| seen.insert(c.name.to_ascii_lowercase()));
+        return Ok(Json(CitiesRes { cities }));
+    }
+    let token = query
+        .session_token
+        .as_deref()
+        .filter(|t| valid_session_token(t))
+        .unwrap_or("driver-city-picker-session");
+    let suggestions = google::autocomplete_cities(&st.http, key, q, country.as_deref(), token).await?;
+    let cities = suggestions
+        .into_iter()
+        .filter(|s| !s.primary_text.is_empty())
+        .map(|s| CityItem {
+            name: s.primary_text,
+            region: s.secondary_text,
+            country_code: country.clone().unwrap_or_default(),
+        })
+        .collect();
+    Ok(Json(CitiesRes { cities }))
 }
 
 #[derive(Deserialize)]

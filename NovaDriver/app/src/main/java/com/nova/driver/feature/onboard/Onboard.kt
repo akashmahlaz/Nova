@@ -225,18 +225,130 @@ private fun ColumnScope.PerkTile(text: String, icon: ImageVector, bg: Color, fg:
 }
 
 @Composable
-private fun PhonePrefix(text: String) {
-    Box(
-        Modifier.height(64.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp)).padding(horizontal = 14.dp),
-        contentAlignment = Alignment.Center,
-    ) { Text(text, fontSize = 17.sp, fontWeight = FontWeight.Bold) }
+private fun CountryCodeButton(country: com.nova.driver.data.auth.Country, onClick: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, c.outline),
+        color = c.surface,
+        modifier = Modifier.height(56.dp),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(country.flag, fontSize = 16.sp)
+            Text("+${country.dial}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Icon(NovaIcons.Down, contentDescription = "Select country", modifier = Modifier.size(16.dp), tint = c.onSurfaceVariant)
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun CityPickerSheet(
+    country: com.nova.driver.data.auth.Country,
+    selectedCity: String,
+    onChangeCountry: () -> Unit,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    var query by rememberSaveable { mutableStateOf("") }
+    var cities by remember { mutableStateOf<List<DriverApi.CityOption>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(country.iso, query) {
+        if (query.isNotBlank()) delay(280)
+        loading = true
+        loadError = null
+        runCatching { DriverApi.cities(country.iso, query.trim(), countryName = country.name) }
+            .onSuccess { cities = it }
+            .onFailure { loadError = errorMessage(it) }
+        loading = false
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = c.surface,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .navigationBarsPadding()
+                .padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Select your city", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                Surface(onClick = onChangeCountry, shape = CircleShape, color = c.surfaceContainerHigh) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(country.flag, fontSize = 15.sp)
+                        Text(country.iso, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Icon(NovaIcons.Down, contentDescription = "Change country", modifier = Modifier.size(14.dp))
+                    }
+                }
+            }
+            NovaTextField(
+                value = query,
+                onValueChange = { query = it.take(60) },
+                label = "Search city in ${country.name}",
+                placeholder = "Type your city name",
+            )
+            when {
+                loading -> Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
+                    androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                }
+                loadError != null -> Text(loadError!!, color = c.error, fontSize = 14.sp)
+                cities.isEmpty() -> Text(
+                    if (query.isBlank()) "Type your city name above to search in ${country.name}." else "No cities matched \"$query\" in ${country.name}.",
+                    fontSize = 14.sp,
+                    color = c.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 24.dp),
+                )
+                else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(cities.size) { i ->
+                        val item = cities[i]
+                        val chosen = item.name.equals(selectedCity, ignoreCase = true)
+                        Surface(
+                            onClick = { onPick(item.name) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (chosen) c.primaryContainer.copy(alpha = 0.4f) else Color.Transparent,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.name, fontSize = 16.sp, fontWeight = if (chosen) FontWeight.Bold else FontWeight.Medium)
+                                    if (item.region.isNotBlank()) {
+                                        Text(item.region, fontSize = 13.sp, color = c.onSurfaceVariant)
+                                    }
+                                }
+                                if (chosen) Icon(NovaIcons.Check, contentDescription = "Selected", tint = c.primary, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun SignUpScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
-    val region = remember { Phones.region(context) }
+    var countryIso by rememberSaveable { mutableStateOf(com.nova.driver.data.auth.PhoneRegions.defaultRegion(context).iso) }
+    val country = remember(countryIso) { com.nova.driver.data.auth.PhoneRegions.find(countryIso) ?: com.nova.driver.data.auth.PhoneRegions.defaultRegion(context) }
+    var showCountryPicker by remember { mutableStateOf(false) }
+    var cityMenu by remember { mutableStateOf(false) }
+    var showCityPicker by remember { mutableStateOf(false) }
+    var nearbyCities by remember { mutableStateOf<List<DriverApi.CityOption>>(emptyList()) }
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -244,17 +356,61 @@ fun SignUpScreen(nav: Navigator) {
     var last by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
-    var city by rememberSaveable { mutableStateOf("Auckland") }
-    var cityMenu by remember { mutableStateOf(false) }
+    var city by rememberSaveable { mutableStateOf("") }
     var endorsement by rememberSaveable { mutableIntStateOf(0) }
+
+    // Fetch dynamic nearby/country cities from Google Places (nearby if GPS is available, else country cities).
+    LaunchedEffect(country.iso) {
+        val loc = runCatching { DriverStore.currentLocation() }.getOrNull()
+        runCatching { DriverApi.cities(country.iso, "", loc?.latitude, loc?.longitude, country.name) }
+            .onSuccess { list ->
+                nearbyCities = list
+                if (city.isBlank()) list.firstOrNull()?.let { city = it.name }
+            }
+    }
+
+    if (showCountryPicker) {
+        CountryPickerSheet(
+            selected = country,
+            onPick = { picked ->
+                if (picked.iso != countryIso) {
+                    countryIso = picked.iso
+                    city = ""
+                }
+                showCountryPicker = false
+            },
+            onDismiss = { showCountryPicker = false },
+        )
+    }
+    if (showCityPicker) {
+        CityPickerSheet(
+            country = country,
+            selectedCity = city,
+            onChangeCountry = { showCityPicker = false; showCountryPicker = true },
+            onPick = { picked -> city = picked; showCityPicker = false },
+            onDismiss = { showCityPicker = false },
+        )
+    }
+
     val continueSignUp = {
-        val e164 = Phones.toE164(region, phone)
-        if (e164 == null) error = "Enter a valid mobile number."
+        val e164 = com.nova.driver.data.auth.PhoneRegions.toE164(country.iso, phone)
+        if (e164 == null) error = "Enter a valid mobile number for ${country.name}."
+        else if (city.isBlank()) error = "Select the city you'll drive in."
         else scope.launch {
             busy = true; error = null
             try {
                 val sent = DriverApi.sendOtp(e164, "signup")
-                AuthStore.draft = SignInDraft(e164, "signup", first.trim(), last.trim(), sent.destinationHint, sent.resendIn)
+                AuthStore.draft = SignInDraft(
+                    phone = e164,
+                    purpose = "signup",
+                    firstName = first.trim(),
+                    lastName = last.trim(),
+                    city = city.trim(),
+                    countryCode = country.iso,
+                    hasPassengerLicence = endorsement == 0,
+                    destinationHint = sent.destinationHint,
+                    resendIn = sent.resendIn,
+                )
                 nav.go(Otp)
             } catch (e: Exception) {
                 // One account, one role: an existing number is never turned into a driver here.
@@ -265,7 +421,7 @@ fun SignUpScreen(nav: Navigator) {
     }
     SubPage(null, onBack = { nav.back() }, header = { SignUpSteps(0) }, bottom = {
         error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error, modifier = Modifier.padding(horizontal = 4.dp)) }
-        NovaButton(if (busy) "Sending code…" else "Continue", onClick = continueSignUp, enabled = !busy && first.isNotBlank() && phone.count(Char::isDigit) >= 6)
+        NovaButton(if (busy) "Sending code…" else "Continue", onClick = continueSignUp, enabled = !busy && first.isNotBlank() && city.isNotBlank() && phone.count(Char::isDigit) >= 6)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
             Text("Already driving with Nova? ", fontSize = 15.sp, color = c.onSurfaceVariant)
             Text("Log in", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = c.primary, modifier = Modifier.clickable { nav.go(Login) })
@@ -277,31 +433,46 @@ fun SignUpScreen(nav: Navigator) {
             NovaTextField(last, { last = it }, "Last name", Modifier.weight(1f), keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-            PhonePrefix(Phones.prefix(region))
-            NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null }, "Mobile", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+            CountryCodeButton(country, onClick = { showCountryPicker = true })
+            NovaTextField(
+                phone,
+                { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null },
+                "Mobile",
+                Modifier.weight(1f),
+                placeholder = com.nova.driver.data.auth.PhoneRegions.exampleNumber(country.iso) ?: "Mobile number",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            )
         }
         NovaTextField(email, { email = it }, "Email (optional)", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
         Box {
-            Surface(onClick = { cityMenu = true }, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, c.outline), color = c.surface, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
+            Surface(onClick = { if (nearbyCities.isNotEmpty()) cityMenu = true else showCityPicker = true }, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, c.outline), color = c.surface, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp)) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("City you'll drive in", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
-                        Text(city, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                        Text("City you'll drive in (${country.name})", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
+                        Text(city.ifBlank { "Select city" }, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = if (city.isBlank()) c.onSurfaceVariant else c.onSurface)
                     }
                     Icon(NovaIcons.Down, null)
                 }
             }
             androidx.compose.material3.DropdownMenu(expanded = cityMenu, onDismissRequest = { cityMenu = false }) {
-                listOf("Auckland", "Wellington", "Christchurch", "Hamilton", "Tauranga", "Dunedin").forEach { name ->
-                    androidx.compose.material3.DropdownMenuItem(text = { Text(name) }, onClick = { city = name; cityMenu = false })
+                nearbyCities.forEach { item ->
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(item.name) },
+                        onClick = { city = item.name; cityMenu = false },
+                    )
                 }
+                androidx.compose.material3.HorizontalDivider()
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("Search other city…", color = c.primary, fontWeight = FontWeight.SemiBold) },
+                    onClick = { cityMenu = false; showCityPicker = true },
+                )
             }
         }
-        Text("Do you have a P endorsement?", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+        Text("Do you have a commercial passenger licence?", fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
         ConnectedChoice(listOf("Yes, I have one", "Applying"), endorsement, { endorsement = it })
         if (endorsement == 1) {
             Text(
-                "No problem — you can finish sign-up now. We'll guide you through the NZTA application before your first trip.",
+                "No problem — you can finish sign-up now. We'll guide you through your local licensing steps before your first trip.",
                 fontSize = 13.sp, lineHeight = 19.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp),
             )
         }
@@ -312,14 +483,25 @@ fun SignUpScreen(nav: Navigator) {
 fun LoginScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val context = LocalContext.current
-    val region = remember { Phones.region(context) }
+    var countryIso by rememberSaveable { mutableStateOf(com.nova.driver.data.auth.PhoneRegions.defaultRegion(context).iso) }
+    val country = remember(countryIso) { com.nova.driver.data.auth.PhoneRegions.find(countryIso) ?: com.nova.driver.data.auth.PhoneRegions.defaultRegion(context) }
+    var showCountryPicker by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var phone by rememberSaveable { mutableStateOf("") }
+
+    if (showCountryPicker) {
+        CountryPickerSheet(
+            selected = country,
+            onPick = { picked -> countryIso = picked.iso; showCountryPicker = false },
+            onDismiss = { showCountryPicker = false },
+        )
+    }
+
     val sendCode = {
-        val e164 = Phones.toE164(region, phone)
-        if (e164 == null) error = "Enter a valid mobile number."
+        val e164 = com.nova.driver.data.auth.PhoneRegions.toE164(country.iso, phone)
+        if (e164 == null) error = "Enter a valid mobile number for ${country.name}."
         else scope.launch {
             busy = true; error = null
             runCatching { DriverApi.sendOtp(e164, "login") }
@@ -350,8 +532,15 @@ fun LoginScreen(nav: Navigator) {
                 Text("Log in with your driver mobile number.", fontSize = 16.sp, lineHeight = 24.sp, color = c.onSurfaceVariant)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                PhonePrefix("$region ${Phones.prefix(region)}")
-                NovaTextField(phone, { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null }, "Mobile number", Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
+                CountryCodeButton(country, onClick = { showCountryPicker = true })
+                NovaTextField(
+                    phone,
+                    { phone = it.filter { ch -> ch.isDigit() || ch == ' ' }.take(15); error = null },
+                    "Mobile number",
+                    Modifier.weight(1f),
+                    placeholder = com.nova.driver.data.auth.PhoneRegions.exampleNumber(country.iso) ?: "Mobile number",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                )
             }
             error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.error) }
             NovaButton(if (busy) "Sending code…" else "Send code", onClick = sendCode, enabled = !busy && phone.count(Char::isDigit) >= 6)
@@ -475,7 +664,7 @@ fun VehicleScreen(nav: Navigator) {
         ) {
             Column(Modifier.weight(1f)) {
                 Text("Plate", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
-                Text("We'll check rego & WoF/CoF with NZTA", fontSize = 14.sp, color = c.onSurfaceVariant)
+                Text("We'll verify your registration & vehicle inspection", fontSize = 14.sp, color = c.onSurfaceVariant)
             }
             Box(Modifier.height(48.dp).widthIn(min = 120.dp, max = 168.dp).clip(RoundedCornerShape(8.dp)).background(Color.White).border(2.dp, c.onSurface, RoundedCornerShape(8.dp)).padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
                 androidx.compose.foundation.text.BasicTextField(
@@ -596,7 +785,7 @@ fun DocumentsScreen(nav: Navigator) {
         ModalBottomSheet(onDismissRequest = { licenceSheet = false }, containerColor = c.surface) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("Licence number", style = MaterialTheme.typography.headlineSmall)
-                Text("The number on the front of your licence card (5a on NZ licences).", fontSize = 14.sp, color = c.onSurfaceVariant)
+                Text("The number printed on the front of your driver licence.", fontSize = 14.sp, color = c.onSurfaceVariant)
                 NovaTextField(licence, { licence = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(20) }, "Licence number", keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters))
                 NovaButton("Save", onClick = { DriverStore.licenceNumber = licence.trim().uppercase(); licenceSheet = false }, enabled = licenceOk)
             }
@@ -831,13 +1020,12 @@ fun BankScreen(nav: Navigator) {
     var schedule by rememberSaveable { mutableIntStateOf(schedules.indexOf(saved?.payoutSchedule ?: "daily").coerceAtLeast(0)) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    // NZ format: BB-bbbb-AAAAAAA-SS(S); bank 12 = ASB.
-    val digits = account.filter(Char::isDigit)
-    val valid = digits.length in 15..16
+    val accountClean = account.trim()
+    val valid = accountClean.length in 6..34 && accountClean.any(Char::isDigit)
     val save = {
         scope.launch {
             busy = true; error = null
-            runCatching { DriverStore.savePayout(name.trim(), account.trim(), ird.trim(), gst, schedules[schedule]) }
+            runCatching { DriverStore.savePayout(name.trim(), accountClean, ird.trim(), gst, schedules[schedule]) }
                 .onSuccess { nav.back() }
                 .onFailure { error = errorMessage(it) }
             busy = false
@@ -850,18 +1038,18 @@ fun BankScreen(nav: Navigator) {
     }) {
         if (saved != null) Text("On file: ${saved.accountName} ···· ${saved.accountLast4}. Enter the full number again to change it.", fontSize = 14.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
         Text("Where should we pay you?", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 32.sp, lineHeight = 36.sp), modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 4.dp))
-        NovaTextField(name, { name = it }, "Account name")
-        NovaTextField(account, { account = it.filter { ch -> ch.isDigit() || ch == '-' }.take(19) }, "NZ bank account number", placeholder = "BB-bbbb-AAAAAAA-SS", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        NovaTextField(name, { name = it }, "Account holder name")
+        NovaTextField(account, { account = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' || ch == ' ' }.take(34) }, "Bank account number / IBAN", placeholder = "Account number or IBAN")
         Row(Modifier.padding(horizontal = 4.dp).offset(y = (-4).dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Icon(if (valid) NovaIcons.Check else NovaIcons.Info, null, Modifier.size(16.dp), tint = if (valid) c.primary else c.onSurfaceVariant)
-            Text(if (valid) "${if (digits.startsWith("12")) "ASB Bank" else "Bank"} · account format valid" else "Enter all 15–16 digits", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (valid) c.primary else c.onSurfaceVariant)
+            Text(if (valid) "Account format valid" else "Enter your full account number or IBAN", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = if (valid) c.primary else c.onSurfaceVariant)
         }
-        NovaTextField(ird, { ird = it.filter { ch -> ch.isDigit() || ch == '-' }.take(11) }, "IRD number", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-        Text("Needed so earnings are reported correctly to Inland Revenue. Never shown to riders.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-4).dp))
+        NovaTextField(ird, { ird = it.uppercase().filter { ch -> ch.isLetterOrDigit() || ch == '-' }.take(20) }, "Tax ID / TIN (optional)")
+        Text("Needed where local tax reporting applies. Never shown to riders.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp).offset(y = (-4).dp))
         Row(Modifier.toggleable(gst, role = Role.Switch) { gst = it }.padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Column(Modifier.weight(1f)) {
-                Text("I'm GST registered", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Text("We'll add GST to your tax invoices", fontSize = 13.sp, color = c.onSurfaceVariant)
+                Text("Registered for sales tax / GST", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text("We'll include tax details on your invoices", fontSize = 13.sp, color = c.onSurfaceVariant)
             }
             Switch(gst, null, colors = SwitchDefaults.colors(checkedTrackColor = NovaTheme.colors.cta, checkedThumbColor = NovaTheme.colors.onCta))
         }

@@ -164,6 +164,184 @@ pub async fn autocomplete(
         .collect())
 }
 
+/// Places Autocomplete (New) restricted to `(cities)` for worldwide driver onboarding.
+pub async fn autocomplete_cities(
+    http: &reqwest::Client,
+    key: &str,
+    input: &str,
+    region_code: Option<&str>,
+    session_token: &str,
+) -> Result<Vec<Suggestion>, ApiError> {
+    let mut body = json!({
+        "input": input,
+        "sessionToken": session_token,
+        "includedPrimaryTypes": ["(cities)"],
+    });
+    if let Some(region) = region_code {
+        body["includedRegionCodes"] = json!([region]);
+        body["regionCode"] = json!(region.to_ascii_lowercase());
+    }
+
+    let res = http
+        .post(format!("{PLACES_BASE}/places:autocomplete"))
+        .timeout(TIMEOUT)
+        .header("X-Goog-Api-Key", key)
+        .header(
+            "X-Goog-FieldMask",
+            "suggestions.placePrediction.placeId,\
+             suggestions.placePrediction.structuredFormat",
+        )
+        .json(&body)
+        .send()
+        .await;
+    let v = read_json(res, "places city autocomplete").await?;
+
+    #[derive(Deserialize)]
+    struct Text {
+        #[serde(default)]
+        text: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Structured {
+        main_text: Option<Text>,
+        secondary_text: Option<Text>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Prediction {
+        place_id: String,
+        structured_format: Option<Structured>,
+    }
+    #[derive(Deserialize)]
+    struct Item {
+        #[serde(rename = "placePrediction")]
+        place_prediction: Option<Prediction>,
+    }
+    #[derive(Deserialize)]
+    struct Res {
+        #[serde(default)]
+        suggestions: Vec<Item>,
+    }
+    let parsed: Res = serde_json::from_value(v).map_err(|e| bad_shape("places city autocomplete", e))?;
+    Ok(parsed
+        .suggestions
+        .into_iter()
+        .filter_map(|s| s.place_prediction)
+        .map(|p| {
+            let (primary, secondary) = p
+                .structured_format
+                .map(|f| {
+                    (
+                        f.main_text.map(|t| t.text).unwrap_or_default(),
+                        f.secondary_text.map(|t| t.text).unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_default();
+            Suggestion {
+                place_id: p.place_id,
+                primary_text: primary,
+                secondary_text: secondary,
+                distance_meters: None,
+            }
+        })
+        .collect())
+}
+
+pub struct PlaceCity {
+    pub name: String,
+    pub region: String,
+}
+
+/// Places API (New) `searchNearby` with `includedTypes: ["locality"]` around `(lat, lng)`.
+pub async fn nearby_cities(
+    http: &reqwest::Client,
+    key: &str,
+    lat: f64,
+    lng: f64,
+) -> Result<Vec<PlaceCity>, ApiError> {
+    let body = json!({
+        "includedTypes": ["locality"],
+        "maxResultCount": 10,
+        "locationRestriction": {
+            "circle": {
+                "center": { "latitude": lat, "longitude": lng },
+                "radius": 50000.0
+            }
+        }
+    });
+    post_city_places(http, key, "places:searchNearby", body).await
+}
+
+/// Places API (New) `searchText` with `includedType: "locality"` for a country when GPS is unavailable.
+pub async fn country_cities(
+    http: &reqwest::Client,
+    key: &str,
+    country_name: &str,
+    region_code: Option<&str>,
+) -> Result<Vec<PlaceCity>, ApiError> {
+    let mut body = json!({
+        "textQuery": format!("major cities in {country_name}"),
+        "includedType": "locality",
+        "strictTypeFiltering": true,
+        "pageSize": 10,
+    });
+    if let Some(region) = region_code {
+        body["regionCode"] = json!(region.to_ascii_uppercase());
+    }
+    post_city_places(http, key, "places:searchText", body).await
+}
+
+async fn post_city_places(
+    http: &reqwest::Client,
+    key: &str,
+    endpoint: &'static str,
+    body: serde_json::Value,
+) -> Result<Vec<PlaceCity>, ApiError> {
+    let res = http
+        .post(format!("{PLACES_BASE}/{endpoint}"))
+        .timeout(TIMEOUT)
+        .header("X-Goog-Api-Key", key)
+        .header("X-Goog-FieldMask", "places.displayName,places.formattedAddress")
+        .json(&body)
+        .send()
+        .await;
+    let v = read_json(res, endpoint).await?;
+
+    #[derive(Deserialize)]
+    struct DisplayName {
+        #[serde(default)]
+        text: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Place {
+        display_name: Option<DisplayName>,
+        #[serde(default)]
+        formatted_address: String,
+    }
+    #[derive(Deserialize)]
+    struct Res {
+        #[serde(default)]
+        places: Vec<Place>,
+    }
+    let parsed: Res = serde_json::from_value(v).map_err(|e| bad_shape(endpoint, e))?;
+    Ok(parsed
+        .places
+        .into_iter()
+        .filter_map(|p| {
+            let name = p.display_name?.text.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(PlaceCity {
+                name,
+                region: p.formatted_address,
+            })
+        })
+        .collect())
+}
+
 /// Place Details (New). Passing the autocomplete session token here closes the billing session,
 /// which makes every autocomplete request in that session free (only this call is billed).
 ///

@@ -137,7 +137,14 @@ object DriverStore {
     suspend fun submitApplication() {
         val current = me ?: refreshMe()
         if (current.driver == null || current.driver.status == "pending") {
-            me = DriverApi.apply(licenceNumber.trim(), null)
+            val draft = AuthStore.draft
+            me = DriverApi.apply(
+                licenceNumber = licenceNumber.trim(),
+                licenceExpiry = null,
+                city = draft.city,
+                countryCode = draft.countryCode,
+                hasPassengerLicence = draft.hasPassengerLicence,
+            )
         }
         vehicleDraft?.let { v ->
             me = DriverApi.setVehicle(v.make, v.model, v.color, v.plate, v.year, v.seats, v.electric, v.wheelchair)
@@ -305,7 +312,7 @@ object DriverStore {
             ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     @SuppressLint("MissingPermission")
-    private suspend fun currentLocation(): Location? {
+    suspend fun currentLocation(): Location? {
         if (!hasLocationPermission()) return null
         val client = LocationServices.getFusedLocationProviderClient(appContext)
         val fresh = runCatching {
