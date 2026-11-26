@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.os.Looper
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -24,6 +26,8 @@ import com.nova.driver.data.api.DriverRide
 import com.nova.driver.data.api.DriverState
 import com.nova.driver.data.api.Offer
 import com.nova.driver.data.api.ProductRule
+import com.nova.driver.data.api.RideRoute
+import com.nova.driver.data.api.SurgeCell
 import com.nova.driver.data.auth.AuthStore
 import com.nova.driver.navigation.Arrived
 import com.nova.driver.navigation.OnTrip
@@ -99,14 +103,37 @@ object DriverStore {
     var unread: Int by mutableStateOf(0)
         private set
 
+    /** Latest GPS fix (drives the map's camera and the route step tracking). */
+    var location: Location? by mutableStateOf(null)
+        private set
+    /** Surge cells around the driver, refreshed every minute on the Online screen. */
+    var surge: List<SurgeCell> by mutableStateOf(emptyList())
+        private set
+    /** Live route to the next stop, its current step and the metres left in that step. */
+    var route: RideRoute? by mutableStateOf(null)
+        private set
+    var stepIndex: Int by mutableIntStateOf(0)
+        private set
+    var stepLeftMeters: Long by mutableStateOf(0L)
+        private set
+    /** Chat with the rider of the current trip (quick replies sent, messages received). */
+    val chat = mutableStateListOf<ChatMessage>()
+    private var chatRideId: String? = null
+
     var vehicleDraft: VehicleDraft? = null
     var licenceNumber: String = ""
 
     private lateinit var appContext: Context
     private var liveJob: Job? = null
     private var socket: WebSocket? = null
+    private var lastHttpAt = 0L
     private var lastFix: Location? = null
     private var lastSentAt = 0L
+    private var routeKey: String? = null
+    private var travelled = 0.0
+    private var prevFix: Location? = null
+    private var lastRouteAt = 0L
+    private var spokenStep: String? = null
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -123,6 +150,9 @@ object DriverStore {
         today = null
         week = null
         unread = 0
+        surge = emptyList()
+        clearRoute()
+        chat.clear()
     }
 
     // ---------- account ----------
@@ -216,8 +246,112 @@ object DriverStore {
             cancelledRider = before.riderName
         }
         state = next
+        onRideChanged()
         if (next.online || next.ride != null) startLive() else stopLive()
     }
+
+    /** A new trip or a new leg (pickup → drop-off) needs a new route; a new trip starts a new chat. */
+    private fun onRideChanged() {
+        val ride = state.ride
+        val key = ride?.let { "${it.id}:${if (it.status == "in_progress") "dropoff" else "pickup"}" }
+        if (ride == null || ride.status == "arriving" || key != routeKey) clearRoute()
+        if (ride?.id != chatRideId) { chat.clear(); chatRideId = ride?.id }
+    }
+
+    private fun clearRoute() {
+        route = null; routeKey = null; stepIndex = 0; stepLeftMeters = 0; travelled = 0.0; prevFix = null; spokenStep = null
+    }
+
+    // ---------- map data: surge, destination filter, live route ----------
+
+    suspend fun refreshSurge() {
+        val fix = lastFix ?: currentLocation() ?: return
+        runCatching { DriverApi.surge(fix.latitude, fix.longitude) }.onSuccess { surge = it }
+    }
+
+    /** Destination filter (Uber "Destination mode": 2 a day, only trips ending closer to it). */
+    suspend fun setDestination(name: String, lat: Double, lng: Double) {
+        val (destination, left) = DriverApi.setDestination(name, lat, lng)
+        me = me?.copy(destination = destination, destinationUsesLeft = left)
+    }
+
+    suspend fun clearDestination() {
+        DriverApi.clearDestination()
+        me = me?.copy(destination = null)
+    }
+
+    /** Fetches the route from our last fix to the next stop (driver screens call it every 30 s). */
+    suspend fun refreshRoute() {
+        val ride = state.ride?.takeIf { it.status == "accepted" || it.status == "in_progress" } ?: return
+        lastRouteAt = System.currentTimeMillis()
+        val next = runCatching { DriverApi.rideRoute(ride.id) }.getOrNull() ?: return
+        if (state.ride?.id != ride.id) return
+        routeKey = "${ride.id}:${next.target}"
+        route = next
+        travelled = 0.0
+        prevFix = lastFix
+        stepIndex = 0
+        updateStep()
+    }
+
+    /** Which step the driver is on, from metres driven since the route was fetched. */
+    private fun updateStep() {
+        val steps = route?.steps.orEmpty()
+        if (steps.isEmpty()) { stepLeftMeters = route?.distanceMeters ?: 0; return }
+        var before = 0L
+        var index = steps.lastIndex
+        for ((i, step) in steps.withIndex()) {
+            if (travelled < before + step.distanceMeters) { index = i; break }
+            before += step.distanceMeters
+        }
+        if (index == steps.lastIndex && travelled >= before + steps.last().distanceMeters) before = steps.dropLast(1).sumOf { it.distanceMeters }
+        stepLeftMeters = (before + steps[index].distanceMeters - travelled).toLong().coerceAtLeast(0)
+        val left = index > stepIndex
+        stepIndex = index
+        announce(steps[index].instruction)
+        // Left the step: ask for a fresh route from here (at most every 5 s).
+        if (left && System.currentTimeMillis() - lastRouteAt > 5_000) scope.launch { refreshRoute() }
+    }
+
+    private fun onFixForRoute(fix: Location) {
+        if (route == null) return
+        prevFix?.let { travelled += it.distanceTo(fix) }
+        prevFix = fix
+        updateStep()
+    }
+
+    /** Voice guidance: says each new instruction once, unless muted (Settings or the map toggle). */
+    private fun announce(instruction: String) {
+        if (instruction.isBlank() || instruction == spokenStep) return
+        spokenStep = instruction
+        if (NavPrefs.voice(appContext)) Speech.say(appContext, "In ${spokenDistance(stepLeftMeters)}, $instruction")
+    }
+
+    private fun spokenDistance(meters: Long): String = when {
+        meters < 1_000 -> "${(meters / 10 * 10).coerceAtLeast(10)} metres"
+        else -> "%.1f kilometres".format(meters / 1000.0)
+    }
+
+    /** Loads the trip's chat history (on opening the chat and after the socket reconnects). */
+    suspend fun loadChat() {
+        val ride = state.ride ?: return
+        val history = runCatching { DriverApi.messages(ride.id) }.getOrNull() ?: return
+        if (state.ride?.id != ride.id) return
+        val sentLocally = chat.filter { it.id == null }
+        chat.clear()
+        chat.addAll(history.map { ChatMessage(id = it.id, me = it.from == "driver", text = it.text) })
+        chat.addAll(sentLocally.filter { local -> history.none { it.from == "driver" && it.text == local.text } })
+    }
+
+    /** Sends a message to the rider in-app. Throws on failure, so the screen can offer SMS instead. */
+    suspend fun sendChat(text: String) {
+        val ride = state.ride ?: throw ApiException("chat_closed")
+        val sent = DriverApi.sendMessage(ride.id, text.trim())
+        if (chat.none { it.id == sent.id }) chat.add(ChatMessage(id = sent.id, me = true, text = sent.text))
+    }
+
+    /** A message sent outside the app (SMS fallback), kept in the log. */
+    fun addSentMessage(text: String) { chat.add(ChatMessage(me = true, text = text)) }
 
     suspend fun goOnline() {
         val fix = currentLocation() ?: throw ApiException("invalid_location")
@@ -231,6 +365,7 @@ object DriverStore {
         return try {
             DriverApi.accept(offer.offerId).also { ride ->
                 state = state.copy(offer = null, ride = ride)
+                onRideChanged()
                 startLive()
             }
         } catch (e: ApiException) {
@@ -250,12 +385,20 @@ object DriverStore {
         if (state.offer?.offerId == offerId) state = state.copy(offer = null)
     }
 
-    suspend fun arrived() = rideStep { DriverApi.arrived(it) }
+    /** Arrived, no-show and drop-off are checked against the server's latest GPS fix, so send a fresh one first. */
+    private suspend fun sendFreshFix() {
+        val fix = currentLocation() ?: return
+        lastSentAt = System.currentTimeMillis()
+        runCatching { DriverApi.location(fix.latitude, fix.longitude, fix.headingOrNull(), fix.speedOrNull()) }
+    }
+
+    suspend fun arrived() = rideStep { sendFreshFix(); DriverApi.arrived(it) }
 
     suspend fun start(pin: String) = rideStep { DriverApi.start(it, pin) }
 
     suspend fun complete() {
         val ride = state.ride ?: return
+        sendFreshFix()
         val done = DriverApi.complete(ride.id)
         lastCompleted = done
         state = state.copy(ride = null)
@@ -270,13 +413,14 @@ object DriverStore {
     /** The rider never came (allowed after the free wait at the pickup). */
     suspend fun noShow() {
         val ride = state.ride ?: return
+        sendFreshFix()
         applyState(DriverApi.cancel(ride.id, "no_show"))
     }
 
     private suspend fun rideStep(call: suspend (String) -> DriverRide): DriverRide {
         val ride = state.ride ?: throw ApiException("invalid_ride_state")
         return try {
-            call(ride.id).also { state = state.copy(ride = it) }
+            call(ride.id).also { state = state.copy(ride = it); onRideChanged() }
         } catch (e: ApiException) {
             if (e.code == "invalid_ride_state" || e.code == "ride_cancelled") runCatching { refreshState() }
             throw e
@@ -318,7 +462,7 @@ object DriverStore {
         val fresh = runCatching {
             client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, CancellationTokenSource().token).await()
         }.getOrNull()
-        return (fresh ?: runCatching { client.lastLocation.await() }.getOrNull())?.also { lastFix = it }
+        return (fresh ?: runCatching { client.lastLocation.await() }.getOrNull())?.also { lastFix = it; location = it }
     }
 
     @SuppressLint("MissingPermission")
@@ -336,7 +480,17 @@ object DriverStore {
             awaitClose { client.removeLocationUpdates(callback) }
         }.collect { fix ->
             lastFix = fix
-            if (System.currentTimeMillis() - lastSentAt >= 4_000) send(fix)
+            location = fix
+            onFixForRoute(fix)
+            if (System.currentTimeMillis() - lastSentAt >= 4_000) {
+                // Moving: stream over the open socket (no request per fix); HTTP when it's down.
+                val extra = buildString {
+                    fix.headingOrNull()?.let { append(",\"heading\":$it") }
+                    fix.speedOrNull()?.let { append(",\"speed\":$it") }
+                }
+                val streamed = socket?.send("""{"type":"location","lat":${fix.latitude},"lng":${fix.longitude}$extra}""") == true
+                if (streamed) lastSentAt = System.currentTimeMillis() else send(fix)
+            }
         }
     }
 
@@ -345,13 +499,15 @@ object DriverStore {
         while (currentCoroutineContext().isActive) {
             delay(HEARTBEAT_MS)
             val fix = lastFix ?: currentLocation()
-            if (fix != null && System.currentTimeMillis() - lastSentAt >= HEARTBEAT_MS - 1_000) send(fix)
+            // Over HTTP at least every heartbeat even while streaming: its answer says if we're still online.
+            if (fix != null && System.currentTimeMillis() - lastHttpAt >= HEARTBEAT_MS - 1_000) send(fix)
         }
     }
 
     private suspend fun send(fix: Location) {
         lastSentAt = System.currentTimeMillis()
-        val stillOnline = runCatching { DriverApi.location(fix.latitude, fix.longitude) }.getOrNull() ?: return
+        lastHttpAt = lastSentAt
+        val stillOnline = runCatching { DriverApi.location(fix.latitude, fix.longitude, fix.headingOrNull(), fix.speedOrNull()) }.getOrNull() ?: return
         // The server dropped us (missed heartbeats, suspended): show the truth.
         if (!stillOnline && state.online) runCatching { refreshState() }
     }
@@ -368,6 +524,8 @@ object DriverStore {
                 object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
                         opened.complete(Unit)
+                        // Messages sent while we were disconnected: re-read the trip's chat.
+                        if (state.ride != null) scope.launch { loadChat() }
                     }
                     override fun onMessage(webSocket: WebSocket, text: String) {
                         scope.launch { onEvent(text) }
@@ -401,6 +559,20 @@ object DriverStore {
                 runCatching { json.decodeFromJsonElement(Offer.serializer(), raw) }.onSuccess { state = state.copy(offer = it) }
             }
             "offer_closed" -> event["offer_id"]?.jsonPrimitive?.content?.let(::dropOffer)
+            // A message from the rider of the current trip; read aloud when the driver has that on.
+            "chat_message" -> {
+                val text = event["text"]?.jsonPrimitive?.content?.trim().orEmpty()
+                val rideId = event["ride_id"]?.jsonPrimitive?.content
+                val id = event["id"]?.jsonPrimitive?.content
+                val fromRider = event["from"]?.jsonPrimitive?.content != "driver"
+                if (text.isNotEmpty() && fromRider && (rideId == null || rideId == state.ride?.id) && (id == null || chat.none { it.id == id })) {
+                    chat.add(ChatMessage(id = id, me = false, text = text))
+                    if (NavPrefs.readAloud(appContext)) {
+                        val rider = state.ride?.riderName?.substringBefore(' ')?.ifBlank { null } ?: "Your rider"
+                        Speech.say(appContext, "$rider says: $text", flush = false)
+                    }
+                }
+            }
             // Approved, paused, or a document sent back: re-read the account.
             "driver_status" -> { runCatching { refreshMe() }; refreshUnread() }
             // hello (just connected) and ride changes: re-read the whole state, it's one cheap call.
@@ -408,3 +580,8 @@ object DriverStore {
         }
     }
 }
+
+data class ChatMessage(val me: Boolean, val text: String, val id: String? = null)
+
+private fun Location.headingOrNull(): Float? = if (hasBearing() && hasSpeed() && speed > 1f) bearing else null
+private fun Location.speedOrNull(): Float? = if (hasSpeed()) speed else null

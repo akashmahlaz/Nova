@@ -21,6 +21,8 @@ kotlinxCoroutines = "1.11.0"
 # Networking & device
 okhttp = "4.12.0"
 playServicesLocation = "21.4.0"
+# Real Google map (same version as the rider app)
+mapsCompose = "9.0.1"
 libphonenumber = "9.0.43"
 # Live document scanner viewfinder
 camerax = "1.7.0"
@@ -56,6 +58,7 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinxCoroutines" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 google-play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+google-maps-compose = { group = "com.google.maps.android", name = "maps-compose", version.ref = "mapsCompose" }
 camerax-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
 camerax-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 camerax-compose = { group = "androidx.camera", name = "camera-compose", version.ref = "camerax" }

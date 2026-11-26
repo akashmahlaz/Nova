@@ -26,6 +26,15 @@ val devApiBaseUrl: String = (findProperty("nova.api.dev.url") as String?)
     ?: localProps.getProperty("nova.api.dev.url")
     ?: "http://${lanIpv4() ?: "10.0.2.2"}:3000"
 
+// Android Maps SDK key (map tiles only). Put MAPS_API_KEY=... in local.properties; when it is missing
+// the rider app's local.properties is used (same Google Cloud project). In Google Cloud the key must
+// allow this app's package (com.nova.driver) + signing SHA-1 under "Android apps".
+val riderProps = Properties().apply {
+    val file = rootProject.file("../Nova/local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val mapsApiKey: String = localProps.getProperty("MAPS_API_KEY") ?: riderProps.getProperty("MAPS_API_KEY", "")
+
 android {
     namespace = "com.nova.driver"
     compileSdk {
@@ -38,6 +47,9 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
+        // Without a key the app shows the drawn MapBackdrop instead of a blank grey map.
+        buildConfigField("boolean", "MAPS_ENABLED", mapsApiKey.isNotBlank().toString())
     }
 
     buildTypes {
@@ -86,6 +98,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.okhttp)
     implementation(libs.google.play.services.location)
+    implementation(libs.google.maps.compose)
     implementation(libs.libphonenumber)
     implementation(libs.camerax.camera2)
     implementation(libs.camerax.lifecycle)

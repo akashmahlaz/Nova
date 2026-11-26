@@ -84,6 +84,9 @@ data class DriverMe(
     val online: Boolean = false,
     val documents: List<DriverDocument> = emptyList(),
     val payout: PayoutSummary? = null,
+    /** Destination filter in use (Uber "Destination mode"), and how many sets are left today. */
+    val destination: DriverDestination? = null,
+    @SerialName("destination_uses_left") val destinationUsesLeft: Int = 2,
 ) {
     /** Every required document is uploaded (in review) or verified. */
     val documentsReady: Boolean get() = documents.isNotEmpty() && documents.all { !it.required || it.status == "uploaded" || it.status == "verified" }
@@ -111,12 +114,65 @@ data class PayoutSummary(
 )
 
 @Serializable
+data class DriverDestination(val name: String, val lat: Double, val lng: Double)
+
+@Serializable
+private data class DestinationRes(val destination: DriverDestination, @SerialName("uses_left") val usesLeft: Int)
+
+/** One H3 cell where demand outpaces drivers; [boundary] is a ring of [lat, lng] pairs. */
+@Serializable
+data class SurgeCell(val cell: String, val multiplier: Double, val boundary: List<List<Double>> = emptyList())
+
+@Serializable
+private data class SurgeRes(val cells: List<SurgeCell> = emptyList())
+
+/** One turn of the live route. [maneuver] uses Google Routes names (TURN_LEFT, ROUNDABOUT_RIGHT, ...). */
+@Serializable
+data class RouteStep(val instruction: String = "", @SerialName("distance_meters") val distanceMeters: Long = 0, val maneuver: String? = null)
+
+/** Live route from the driver's last fix to the next stop ([target]: pickup or dropoff). */
+@Serializable
+data class RideRoute(
+    val target: String,
+    @SerialName("eta_seconds") val etaSeconds: Long,
+    @SerialName("distance_meters") val distanceMeters: Long,
+    val polyline: String = "",
+    val steps: List<RouteStep> = emptyList(),
+)
+
+/** One chat message on a ride; [from] is "rider" or "driver". */
+@Serializable
+data class RideMessage(
+    val id: String,
+    val from: String,
+    val text: String,
+    @SerialName("sent_at") val sentAt: String? = null,
+    @SerialName("read_at") val readAt: String? = null,
+)
+
+/** Place search (server proxies Google; the Places key never ships in the app). */
+@Serializable
+data class PlaceSuggestion(
+    @SerialName("place_id") val placeId: String,
+    @SerialName("primary_text") val primaryText: String,
+    @SerialName("secondary_text") val secondaryText: String = "",
+    @SerialName("distance_meters") val distanceMeters: Long? = null,
+)
+
+@Serializable
+data class GeoPlace(@SerialName("place_id") val placeId: String = "", val name: String, val address: String = "", val lat: Double, val lng: Double)
+
+@Serializable
 data class DriverTrip(
     val id: String,
     val status: String,
     @SerialName("product_name") val productName: String,
     val currency: String,
     @SerialName("fare_cents") val fareCents: Long,
+    /** The driver's own pay for the trip (fare less Nova's fee); null on older trips. */
+    @SerialName("driver_earnings_cents") val driverEarningsCents: Long? = null,
+    /** "actual" when the fare was repriced on the real trip instead of the upfront quote. */
+    @SerialName("fare_basis") val fareBasis: String? = null,
     @SerialName("distance_meters") val distanceMeters: Long,
     @SerialName("pickup_name") val pickupName: String,
     @SerialName("dropoff_name") val dropoffName: String,
@@ -183,6 +239,8 @@ data class Offer(
     @SerialName("product_name") val productName: String,
     val currency: String,
     @SerialName("fare_cents") val fareCents: Long,
+    /** What the driver will be paid for this trip (Uber shows drivers their own pay, not the fare). */
+    @SerialName("earnings_cents") val earningsCents: Long? = null,
     @SerialName("pickup_distance_meters") val pickupDistanceMeters: Int,
     @SerialName("distance_meters") val distanceMeters: Long,
     @SerialName("duration_seconds") val durationSeconds: Long,
@@ -216,6 +274,11 @@ data class DriverRide(
     @SerialName("arrived_at") val arrivedAt: String? = null,
     @SerialName("started_at") val startedAt: String? = null,
     @SerialName("completed_at") val completedAt: String? = null,
+    /** Seconds at the pickup before a no-show cancel is allowed; set per ride by the server. */
+    @SerialName("no_show_wait_secs") val noShowWaitSecs: Int = 300,
+    @SerialName("wait_grace_secs") val waitGraceSecs: Int = 120,
+    @SerialName("driver_earnings_cents") val driverEarningsCents: Long? = null,
+    @SerialName("fare_basis") val fareBasis: String = "upfront",
 ) {
     val riderInitials: String get() = riderName.trim().split(' ').mapNotNull { it.firstOrNull()?.uppercaseChar() }.take(2).joinToString("").ifEmpty { "R" }
 }
@@ -396,9 +459,52 @@ object DriverApi {
 
     suspend fun goOffline(): DriverState = io { request("POST", "/v1/driver/offline").decode(DriverState.serializer()) }
 
-    /** Heartbeat + position. Returns whether the server still has this driver online. */
-    suspend fun location(lat: Double, lng: Double): Boolean = io {
-        request("POST", "/v1/driver/location", latLng(lat, lng)).jsonObject["online"]?.jsonPrimitive?.content == "true"
+    /** Heartbeat + position (+ heading in degrees and speed in m/s when the fix has them). Returns whether the server still has this driver online. */
+    suspend fun location(lat: Double, lng: Double, heading: Float? = null, speed: Float? = null): Boolean = io {
+        val body = buildJsonObject {
+            put("lat", lat); put("lng", lng)
+            heading?.let { put("heading", it) }
+            speed?.let { put("speed", it) }
+        }
+        request("POST", "/v1/driver/location", body).jsonObject["online"]?.jsonPrimitive?.content == "true"
+    }
+
+    /** Surge cells (above 1.0x) within ~6 km of the driver. */
+    suspend fun surge(lat: Double, lng: Double): List<SurgeCell> = io {
+        request("GET", "/v1/driver/surge?lat=$lat&lng=$lng").decode(SurgeRes.serializer()).cells
+    }
+
+    /** Sets the destination filter. Returns it with the sets left today. */
+    suspend fun setDestination(name: String, lat: Double, lng: Double): Pair<DriverDestination, Int> = io {
+        val res = request("PUT", "/v1/driver/destination", buildJsonObject { put("lat", lat); put("lng", lng); put("name", name) }).decode(DestinationRes.serializer())
+        res.destination to res.usesLeft
+    }
+
+    suspend fun clearDestination() = io { request("DELETE", "/v1/driver/destination"); Unit }
+
+    /** Live route from the driver's last GPS fix to the ride's next stop. */
+    suspend fun rideRoute(rideId: String): RideRoute = io { request("GET", "/v1/driver/rides/$rideId/route").decode(RideRoute.serializer()) }
+
+    /** Chat history, oldest first (also marks the rider's messages read). */
+    suspend fun messages(rideId: String): List<RideMessage> = io {
+        json.decodeFromJsonElement(ListSerializer(RideMessage.serializer()), request("GET", "/v1/rides/$rideId/messages"))
+    }
+
+    suspend fun sendMessage(rideId: String, text: String): RideMessage = io {
+        request("POST", "/v1/rides/$rideId/messages", buildJsonObject { put("text", text) }).decode(RideMessage.serializer())
+    }
+
+    /** One call per debounced keystroke; reuse [sessionToken] for the whole search. */
+    suspend fun autocomplete(input: String, sessionToken: String, lat: Double?, lng: Double?): List<PlaceSuggestion> = io {
+        val body = buildJsonObject {
+            put("input", input); put("session_token", sessionToken)
+            if (lat != null && lng != null) put("near", buildJsonObject { put("lat", lat); put("lng", lng) })
+        }
+        json.decodeFromJsonElement(ListSerializer(PlaceSuggestion.serializer()), request("POST", "/v1/geo/autocomplete", body).jsonObject.getValue("suggestions"))
+    }
+
+    suspend fun placeDetails(placeId: String, sessionToken: String): GeoPlace = io {
+        request("GET", "/v1/geo/places/${enc(placeId)}?session_token=${enc(sessionToken)}").decode(GeoPlace.serializer())
     }
 
     suspend fun accept(offerId: String): DriverRide = io { request("POST", "/v1/driver/offers/$offerId/accept").decode(DriverRide.serializer()) }
@@ -584,6 +690,13 @@ fun errorMessage(error: Throwable): String = when ((error as? ApiException)?.cod
     "ride_cancelled" -> "The rider cancelled this trip."
     "invalid_ride_state" -> "This trip has moved on. Refreshing…"
     "no_show_too_early" -> "Wait the full free time at the pickup first."
+    "not_at_pickup" -> "You're not at the pickup yet. Get within a few hundred metres, then try again."
+    "location_required" -> "We can't see your location. Turn on location and wait a moment, then try again."
+    "implausible_location" -> "Your GPS jumped. Wait for a steady signal."
+    "chat_closed" -> "Chat is closed for this trip."
+    "empty_message" -> "Type a message first."
+    "destination_limit" -> "You've used both destination filters for today. They reset at midnight."
+    "not_online" -> "Go online first, then set a destination."
     "documents_missing" -> "Upload every required document first."
     "payout_required" -> "Add your bank details first."
     "invalid_account_name" -> "Enter the name on the bank account."

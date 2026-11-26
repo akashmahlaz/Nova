@@ -132,7 +132,7 @@ fun NoShowScreen(nav: Navigator) {
     val scope = rememberCoroutineScope()
     val ride = DriverStore.state.ride
     val rider = ride?.riderName?.substringBefore(' ') ?: "The rider"
-    val freeWait = 180L
+    val freeWait = (ride?.noShowWaitSecs ?: 300).toLong()
     fun waitedNow() = ride?.arrivedAt?.let { runCatching { java.time.Duration.between(java.time.Instant.parse(it), java.time.Instant.now()).seconds }.getOrNull() } ?: 0L
     var waited by remember { mutableStateOf(waitedNow()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); waited = waitedNow() } }
@@ -192,7 +192,7 @@ fun RiderCancelledScreen(nav: Navigator) {
         backOnline()
     }
     Box(Modifier.fillMaxSize()) {
-        MapBackdrop { userDot(196f, 300f, c.primary) }
+        DriverMap(fallback = { userDot(196f, 300f, c.primary) })
         ModalBottomSheet(onDismissRequest = { backOnline() }, sheetState = sheet, containerColor = c.surfaceContainer) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -238,7 +238,17 @@ fun ConnectionLostScreen(nav: Navigator) {
         onDispose { cm?.unregisterNetworkCallback(callback) }
     }
     Box(Modifier.fillMaxSize()) {
-        MapBackdrop { route("M196 640 L196 340 L300 330 L310 120", c.primary, 10f); destination(310f, 118f) }
+        // Map tiles already on screen stay visible offline; the trip's stop is drawn from local state.
+        val ride = DriverStore.state.ride
+        val stop = ride?.let { if (it.status == "in_progress") it.dropoff else it.pickup }
+        DriverMap(
+            follow = true, contentPadding = PaddingValues(top = 110.dp, bottom = 380.dp),
+            fit = listOfNotNull(stop?.let { com.google.android.gms.maps.model.LatLng(it.lat, it.lng) }),
+            fallback = { route("M196 640 L196 340 L300 330 L310 120", c.primary, 10f); destination(310f, 118f) },
+        ) {
+            DriverStore.route?.let { RouteLine(it.polyline) }
+            stop?.let { if (ride.status == "in_progress") DropoffMarker(it.lat, it.lng) else PickupMarker(it.lat, it.lng) }
+        }
         Row(
             Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 4.dp).fillMaxWidth().shadow(8.dp, RoundedCornerShape(28.dp))
                 .clip(RoundedCornerShape(28.dp)).background(c.errorContainer).padding(horizontal = 18.dp, vertical = 16.dp),

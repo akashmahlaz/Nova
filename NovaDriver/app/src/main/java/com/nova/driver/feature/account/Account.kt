@@ -209,7 +209,7 @@ fun EarningsScreen(nav: Navigator) {
             StatTile(hours(data?.onlineSeconds ?: 0), "Online", RoundedCornerShape(8.dp), c.surfaceContainerHigh, c.onSurface, null)
             StatTile(avg, "Per trip", RoundedCornerShape(8.dp, 24.dp, 24.dp, 8.dp), c.primaryContainer, c.onPrimaryContainer, null)
         }
-        Text("Fares of completed trips. Service fees and tips will show here once they apply.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
+        Text("Your pay from completed trips, after Nova's service fee. Trips repriced on the actual route count at their final amount.", fontSize = 13.sp, color = c.onSurfaceVariant, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
 
@@ -282,8 +282,11 @@ fun TripsScreen(nav: Navigator) {
                         Column(Modifier.weight(1f)) {
                             Text("${t.pickupName} → ${t.dropoffName}", fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 2)
                             Text(listOfNotNull(t.productName, formatKm(t.distanceMeters), t.riderName, if (!done) (if (t.cancelReason == "rider_no_show") "No-show" else "Cancelled") else null).joinToString(" · "), fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1)
+                            if (done && t.fareBasis == "actual") Text("Adjusted to actual trip", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.primary)
                         }
-                        Text(if (done) formatMoney(t.fareCents, t.currency) else "—", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = if (done) c.onSurface else c.onSurfaceVariant)
+                        // The driver's own pay (cancel/no-show fees too, when the server paid one).
+                        val pay = t.driverEarningsCents ?: if (done) t.fareCents else null
+                        Text(pay?.let { formatMoney(it, t.currency) } ?: "—", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = if (pay != null && pay > 0) c.onSurface else c.onSurfaceVariant)
                     }
                 }
             }

@@ -396,16 +396,24 @@ fun TodayChip(amount: String, modifier: Modifier = Modifier) {
 
 /** Turn-by-turn card: volt main instruction + soft "then" row. */
 @Composable
-fun TurnCard(distance: String, instruction: String, then: String, modifier: Modifier = Modifier, turnRight: Boolean = false) {
+fun TurnCard(distance: String, instruction: String, then: String, modifier: Modifier = Modifier, turnRight: Boolean = false, maneuver: String? = null) {
+    // The arrow is the Back glyph (pointing left) rotated: 90 = straight on, 45 = left, 135 = right.
+    val rotation = when {
+        maneuver == null -> if (turnRight) 135f else 45f
+        maneuver.contains("UTURN") -> 0f
+        maneuver.contains("RIGHT") -> 135f
+        maneuver.contains("LEFT") -> 45f
+        else -> 90f
+    }
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp, 28.dp, 6.dp, 6.dp)).background(NovaTheme.colors.cta).padding(horizontal = 20.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Icon(NovaIcons.Back, null, tint = NovaTheme.colors.onCta, modifier = Modifier.size(44.dp).rotate(if (turnRight) 135f else 45f))
+            Icon(NovaIcons.Back, null, tint = NovaTheme.colors.onCta, modifier = Modifier.size(44.dp).rotate(rotation))
             Column {
                 Text(distance, fontSize = 38.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.6).sp, color = NovaTheme.colors.onCta)
-                Text(instruction, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = NovaTheme.colors.onCta)
+                Text(instruction, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = NovaTheme.colors.onCta, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
         }
         Text(
