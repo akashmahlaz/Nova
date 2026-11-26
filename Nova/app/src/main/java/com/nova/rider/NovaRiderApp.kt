@@ -69,6 +69,9 @@ fun NovaRiderApp(
         com.nova.rider.data.profile.ProfileStore.init(context)
     }
     EnsureLocalNetworkAccess()
+    // Live channel while a ride is active and the rider is signed in: driver position, status.
+    val liveRide = AuthStore.session != null && com.nova.rider.data.trip.TripStore.ride?.isActive == true
+    LaunchedEffect(liveRide) { if (liveRide) com.nova.rider.data.trip.LiveRide.follow() }
     val backStack = rememberNavBackStack(Splash)
     val nav = remember(backStack) { Navigator(backStack) }
     LaunchedEffect(trackToken) {
@@ -126,7 +129,7 @@ fun NovaRiderApp(
             entry<OnTrip> { OnTripScreen(nav) }
             entry<TripComplete> { TripCompleteScreen(nav) }
             entry<Activity> { ActivityScreen(nav) }
-            entry<Receipt> { ReceiptScreen(nav) }
+            entry<Receipt> { ReceiptScreen(nav, it.rideId) }
             entry<Wallet> { WalletScreen(nav) }
             entry<AddCard> { AddCardScreen(nav) }
             entry<Account> { AccountScreen(nav) }

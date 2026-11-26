@@ -97,7 +97,6 @@ import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
-import com.nova.rider.data.Sample
 import com.nova.rider.data.auth.authErrorMessage
 import com.nova.rider.data.profile.ProfileStore
 import com.nova.rider.feature.account.SubPage
@@ -295,10 +294,30 @@ private fun SafetyRow(icon: ImageVector, text: String, shape: RoundedCornerShape
     }
 }
 
+/** The rider's most recent finished ride (for help, lost items and fare issues). Null while loading or if none. */
+@Composable
+private fun rememberLastTrip(): com.nova.rider.data.auth.Ride? {
+    var last by remember { mutableStateOf<com.nova.rider.data.auth.Ride?>(null) }
+    LaunchedEffect(Unit) {
+        last = runCatching { com.nova.rider.data.auth.NovaApi.rides(limit = 10) }.getOrNull()
+            ?.firstOrNull { it.status == "completed" || (it.status == "cancelled" && it.cancelFeeCents > 0) }
+    }
+    return last
+}
+
+private fun tripWhen(r: com.nova.rider.data.auth.Ride): String {
+    val t = runCatching { java.time.Instant.parse(r.startedAt ?: r.requestedAt ?: r.createdAt).atZone(java.time.ZoneId.systemDefault()) }.getOrNull() ?: return ""
+    val day = if (t.toLocalDate() == java.time.LocalDate.now()) "Today" else t.format(java.time.format.DateTimeFormatter.ofPattern("EEE d MMM"))
+    return "$day ${t.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))}"
+}
+
+private fun tripTotal(r: com.nova.rider.data.auth.Ride) = com.nova.rider.data.trip.TripFormat.money(com.nova.rider.data.trip.FareSummary.total(r), r.currency)
+
 @Composable
 fun HelpScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     var query by rememberSaveable { mutableStateOf("") }
+    val last = rememberLastTrip()
     Box(Modifier.fillMaxSize()) {
         SubPage("Help", onBack = { nav.back() }) {
             Row(
@@ -311,12 +330,12 @@ fun HelpScreen(nav: Navigator) {
                     BasicTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface), cursorBrush = SolidColor(c.primary))
                 }
             }
-            Surface(onClick = { nav.go(LostItem) }, shape = RoundedCornerShape(28.dp), color = c.primaryContainer, contentColor = c.onPrimaryContainer) {
+            if (last != null) Surface(onClick = { nav.go(com.nova.rider.navigation.Receipt(last.id)) }, shape = RoundedCornerShape(28.dp), color = c.primaryContainer, contentColor = c.onPrimaryContainer) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     ShapeBadge(NovaShape.Cookie, 52.dp, c.primary) { Icon(NovaIcons.Car, null, tint = Color.White, modifier = Modifier.size(22.dp)) }
                     Column(Modifier.weight(1f)) {
-                        Text("Your last trip · Today 10:14 AM", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("${Sample.destination} · ${Sample.fare}", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("Your last trip · ${tripWhen(last)}", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text("${last.dropoff.name} · ${tripTotal(last)}", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
                         Text("Get help with this trip", fontSize = 14.sp)
                     }
                     Icon(NovaIcons.Chev, null)
@@ -367,14 +386,9 @@ private data class SupportMessage(val me: Boolean, val text: String)
 @Composable
 fun SupportChatScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    val messages = remember {
-        mutableStateListOf(
-            SupportMessage(false, "Hi ${Sample.riderName}, I’m Mere from Nova Support. What can I help with on your trip to ${Sample.destination}?"),
-            SupportMessage(true, "I left my umbrella in the back seat"),
-            SupportMessage(false, "Sorry about that! I’ve messaged ${Sample.driverName}. Would you like him to drop it off? A $15 return fee goes to him."),
-        )
-    }
-    var options by remember { mutableStateOf(listOf("Yes, drop it off", "I’ll collect it")) }
+    val last = rememberLastTrip()
+    val messages = remember { mutableStateListOf<SupportMessage>() }
+    var options by remember { mutableStateOf(listOf("Fare issue", "Lost item", "Something else")) }
     var draft by rememberSaveable { mutableStateOf("") }
     val list = rememberLazyListState()
     fun send(t: String) { val s = t.trim(); if (s.isNotEmpty()) { messages.add(SupportMessage(true, s)); draft = ""; options = emptyList() } }
@@ -388,19 +402,19 @@ fun SupportChatScreen(nav: Navigator) {
             CookieAvatar("N", c.primary, Color.White, size = 44.dp, shape = NovaShape.Burst)
             Column {
                 Text("Nova Support", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Mere is online", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = NovaTheme.colors.success)
+                Text("We usually reply within a day", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.onSurfaceVariant)
             }
         }
         LazyColumn(Modifier.weight(1f), state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            item {
+            if (last != null) item {
                 Row(
                     Modifier.padding(bottom = 8.dp).fillMaxWidth().border(1.dp, c.outlineVariant, RoundedCornerShape(20.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     IconTile(NovaIcons.Car, c.primaryContainer, c.onPrimaryContainer, size = 36.dp, radius = 12.dp, iconSize = 18.dp)
                     Column {
-                        Text("Comfort · Today 10:14 AM", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
-                        Text("Ponsonby Rd → ${Sample.destination} · ${Sample.fare}", fontSize = 13.sp, color = c.onSurfaceVariant)
+                        Text("${last.productName} · ${tripWhen(last)}", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("${last.pickup.name} → ${last.dropoff.name} · ${tripTotal(last)}", fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1)
                     }
                 }
             }
@@ -449,17 +463,20 @@ fun SupportChatScreen(nav: Navigator) {
 @Composable
 fun LostItemScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var description by rememberSaveable { mutableStateOf("Black umbrella with a wooden handle, back seat on the left") }
-    var kind by rememberSaveable { mutableStateOf("Umbrella") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var kind by rememberSaveable { mutableStateOf("") }
+    val last = rememberLastTrip()
+    val driverName = last?.driver?.firstName ?: "your driver"
+    val me = com.nova.rider.data.auth.AuthStore.session?.user
     SubPage("Lost item", onBack = { nav.back() }, bottom = {
-        NovaButton("Send to ${Sample.driverName}", onClick = { nav.replaceTop(SupportChat) }, enabled = description.isNotBlank())
+        NovaButton("Send to $driverName", onClick = { nav.replaceTop(SupportChat) }, enabled = description.isNotBlank())
     }) {
         Text("What did you leave behind?", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.padding(horizontal = 8.dp))
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CookieAvatar(Sample.driverInitials, c.primaryContainer, c.onPrimaryContainer, size = 44.dp)
+        if (last != null) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            CookieAvatar(last.driver?.initials ?: "", c.primaryContainer, c.onPrimaryContainer, size = 44.dp)
             Column {
-                Text("${Sample.driverName} · ${Sample.carShort} ${Sample.plate}", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
-                Text("Today 10:14 AM · ${Sample.destination}", fontSize = 13.sp, color = c.onSurfaceVariant)
+                Text(listOfNotNull(last.driver?.firstName, last.driver?.vehicle?.let { "${it.color} ${it.model} ${it.plate}" }).joinToString(" · ").ifBlank { last.productName }, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                Text("${tripWhen(last)} · ${last.dropoff.name}", fontSize = 13.sp, color = c.onSurfaceVariant)
             }
         }
         com.nova.designsystem.components.NovaTextField(description, { description = it }, "Describe the item", singleLine = false, minLines = 3)
@@ -478,7 +495,11 @@ fun LostItemScreen(nav: Navigator) {
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.tertiaryContainer).padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(NovaIcons.Smartphone, null, tint = c.onTertiaryContainer)
             Text(
-                buildAnnotatedString { append("Lost your phone? We'll call this backup number instead: "); withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) { append("+64 27 555 0142") } },
+                buildAnnotatedString {
+                    val backup = me?.email?.takeIf { it.isNotBlank() } ?: me?.phone
+                    if (backup != null) { append("Lost your phone? We'll reach you here instead: "); withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold)) { append(backup) } }
+                    else append("Lost your phone? Add an email to your account so we can reach you.")
+                },
                 fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold, color = c.onTertiaryContainer,
             )
         }

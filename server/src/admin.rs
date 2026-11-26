@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, State},
     http::HeaderMap,
     extract::Query,
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -35,6 +35,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/admin/rides/{id}", get(ride_detail))
         .route("/v1/admin/service-areas", get(list_service_areas))
         .route("/v1/admin/service-areas/{id}", patch(update_service_area))
+        .route("/v1/admin/service-areas/{id}/pricing", get(area_pricing).put(update_area_rules))
+        .route("/v1/admin/service-areas/{id}/pricing/{product}", put(update_rate_card))
         .route("/v1/admin/media", get(list_media))
         .route("/v1/admin/media/{id}", patch(review_media).delete(delete_media))
 }
@@ -220,12 +222,24 @@ pub struct AdminOverview {
     s3_region: Option<String>,
     /// Drivers with a live heartbeat in dispatch right now (Redis).
     online_drivers: i64,
-    /// Last 14 days, oldest first, so the console can compare this week with the one before.
+    /// Last `days` days (default 14), oldest first, so the console can compare a period with the one before.
     daily_rides: Vec<DailyRidePoint>,
 }
 
-async fn overview(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<AdminOverview>, ApiError> {
+#[derive(Deserialize)]
+pub struct OverviewQuery {
+    /// How many days of daily trips to return, ending today (default 14, at most 180). Ask for
+    /// twice the range shown to compare it with the period before.
+    days: Option<i64>,
+}
+
+async fn overview(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<OverviewQuery>,
+) -> Result<Json<AdminOverview>, ApiError> {
     require_admin(&st, &headers).await?;
+    let days = q.days.unwrap_or(14).clamp(1, 180);
     let c = sqlx::query_as::<_, OverviewCounts>(
         "SELECT
             (SELECT count(*) FROM users) AS total_users,
@@ -263,11 +277,12 @@ async fn overview(State(st): State<AppState>, headers: HeaderMap) -> Result<Json
             COALESCE(count(r.id), 0) AS total,
             COALESCE(count(r.id) FILTER (WHERE r.status = 'completed'), 0) AS completed,
             COALESCE(SUM(r.fare_cents) FILTER (WHERE r.status = 'completed'), 0)::BIGINT AS fare_cents
-         FROM generate_series(CURRENT_DATE - INTERVAL '13 days', CURRENT_DATE, INTERVAL '1 day') AS d
+         FROM generate_series(CURRENT_DATE - make_interval(days => $1::int - 1), CURRENT_DATE, INTERVAL '1 day') AS d
          LEFT JOIN rides r ON r.created_at::date = d::date
          GROUP BY d
          ORDER BY d ASC",
     )
+    .bind(days as i32)
     .fetch_all(&st.pool)
     .await?;
     let mut redis = st.redis.clone();
@@ -949,6 +964,23 @@ pub struct AdminRideDetail {
     ended_at: Option<DateTime<Utc>>,
     offers_sent: i64,
     offers_declined: i64,
+    /// Money, settled at drop-off (see fare.rs).
+    upfront_fare_cents: Option<i64>,
+    fare_basis: String,
+    fare_change_reason: Option<String>,
+    actual_distance_meters: Option<i64>,
+    actual_duration_seconds: Option<i64>,
+    wait_seconds: Option<i64>,
+    wait_fee_cents: i64,
+    cancel_fee_cents: i64,
+    long_pickup_cents: i64,
+    service_fee_cents: Option<i64>,
+    driver_earnings_cents: Option<i64>,
+    booking_fee_cents: Option<i32>,
+    /// GPS checks: driver's distance from the pickup at Arrived and from the destination at the end.
+    arrived_distance_m: Option<i32>,
+    dropoff_distance_m: Option<i32>,
+    trail_points: i64,
 }
 
 /// One trip end to end: who, which car, money, and the dispatch timeline.
@@ -965,7 +997,12 @@ async fn ride_detail(State(st): State<AppState>, headers: HeaderMap, Path(id): P
                 r.surge_multiplier, r.distance_meters, r.duration_seconds, r.payment_method, r.cancel_reason,
                 r.scheduled_at, r.created_at, r.accepted_at, r.arrived_at, r.started_at, r.completed_at, r.ended_at,
                 (SELECT count(*) FROM ride_offers o WHERE o.ride_id = r.id) AS offers_sent,
-                (SELECT count(*) FROM ride_offers o WHERE o.ride_id = r.id AND o.response IN ('declined', 'expired')) AS offers_declined
+                (SELECT count(*) FROM ride_offers o WHERE o.ride_id = r.id AND o.response IN ('declined', 'expired')) AS offers_declined,
+                r.upfront_fare_cents, r.fare_basis, r.fare_change_reason, r.actual_distance_meters, r.actual_duration_seconds,
+                r.wait_seconds, r.wait_fee_cents, r.cancel_fee_cents, r.long_pickup_cents, r.service_fee_cents,
+                r.driver_earnings_cents, (SELECT c.booking_fee_cents FROM ride_rate_cards c WHERE c.ride_id = r.id) AS booking_fee_cents,
+                r.arrived_distance_m, r.dropoff_distance_m,
+                (SELECT count(*) FROM ride_track_points t WHERE t.ride_id = r.id) AS trail_points
          FROM rides r
          JOIN users ru ON ru.id = r.rider_id
          JOIN service_areas sa ON sa.id = r.service_area_id
@@ -1034,6 +1071,195 @@ async fn update_service_area(
     let summary = if req.active { format!("Opened {name} for bookings") } else { format!("Paused bookings in {name}") };
     audit(&st, admin.id, if req.active { "service_area.opened" } else { "service_area.paused" }, "service_area", id, &summary, None).await;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------- pricing: rate cards and market rules ----------
+//
+// Prices are data edited here, never code. A change applies to new quotes only: rides already
+// booked keep the card copied onto them at booking (ride_rate_cards). Every change is audited.
+
+#[derive(Serialize, Deserialize, FromRow)]
+pub struct AreaRules {
+    max_surge: f64,
+    service_fee_bps: i32,
+    cancel_fee_max_bps: i32,
+    fare_rounding_minor: i32,
+    arrive_radius_m: i32,
+    dropoff_radius_m: i32,
+    reprice_over_pct: i32,
+}
+
+#[derive(Serialize, Deserialize, FromRow)]
+pub struct RateCard {
+    #[serde(default)]
+    product_id: String,
+    #[serde(default)]
+    product_name: String,
+    base_cents: i32,
+    per_km_cents: i32,
+    per_min_cents: i32,
+    minimum_cents: i32,
+    booking_fee_cents: i32,
+    wait_per_min_cents: i32,
+    wait_grace_secs: i32,
+    cancel_fee_cents: i32,
+    cancel_grace_secs: i32,
+    no_show_wait_secs: i32,
+    long_pickup_after_secs: i32,
+    active: bool,
+    #[serde(default = "Utc::now")]
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct AreaPricing {
+    id: Uuid,
+    name: String,
+    currency: String,
+    rules: AreaRules,
+    rates: Vec<RateCard>,
+}
+
+const RATE_SELECT: &str = "SELECT f.product_id, p.name AS product_name, f.base_cents, f.per_km_cents, f.per_min_cents,
+        f.minimum_cents, f.booking_fee_cents, f.wait_per_min_cents, f.wait_grace_secs, f.cancel_fee_cents,
+        f.cancel_grace_secs, f.no_show_wait_secs, f.long_pickup_after_secs, f.active, f.updated_at
+     FROM fare_rates f JOIN ride_products p ON p.id = f.product_id";
+
+async fn area_pricing(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<AreaPricing>, ApiError> {
+    require_admin(&st, &headers).await?;
+    let (name, currency): (String, String) = sqlx::query_as("SELECT name, currency FROM service_areas WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&st.pool)
+        .await?
+        .ok_or(ApiError::NotFound("service_area_not_found"))?;
+    let rules = sqlx::query_as::<_, AreaRules>(
+        "SELECT max_surge, service_fee_bps, cancel_fee_max_bps, fare_rounding_minor, arrive_radius_m, dropoff_radius_m, reprice_over_pct
+         FROM service_areas WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&st.pool)
+    .await?;
+    let rates = sqlx::query_as::<_, RateCard>(&format!("{RATE_SELECT} WHERE f.service_area_id = $1 ORDER BY p.sort_order"))
+        .bind(id)
+        .fetch_all(&st.pool)
+        .await?;
+    Ok(Json(AreaPricing { id, name, currency, rules, rates }))
+}
+
+#[derive(Deserialize)]
+pub struct RulesReq {
+    #[serde(flatten)]
+    rules: AreaRules,
+    reason: Option<String>,
+}
+
+async fn update_area_rules(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(req): Json<RulesReq>,
+) -> Result<Json<AreaPricing>, ApiError> {
+    let admin = require_admin(&st, &headers).await?;
+    let reason = required_reason(req.reason.as_deref())?;
+    let r = &req.rules;
+    let valid = (1.0..=5.0).contains(&r.max_surge)
+        && (0..=10_000).contains(&r.service_fee_bps)
+        && (0..=10_000).contains(&r.cancel_fee_max_bps)
+        && r.fare_rounding_minor >= 1
+        && (50..=2_000).contains(&r.arrive_radius_m)
+        && (50..=5_000).contains(&r.dropoff_radius_m)
+        && (5..=200).contains(&r.reprice_over_pct);
+    if !valid {
+        return Err(ApiError::BadRequest("invalid_pricing_rules"));
+    }
+    let name: Option<String> = sqlx::query_scalar(
+        "UPDATE service_areas SET max_surge = $2, service_fee_bps = $3, cancel_fee_max_bps = $4, fare_rounding_minor = $5,
+                arrive_radius_m = $6, dropoff_radius_m = $7, reprice_over_pct = $8, updated_at = now()
+         WHERE id = $1 RETURNING name",
+    )
+    .bind(id)
+    .bind(r.max_surge)
+    .bind(r.service_fee_bps)
+    .bind(r.cancel_fee_max_bps)
+    .bind(r.fare_rounding_minor)
+    .bind(r.arrive_radius_m)
+    .bind(r.dropoff_radius_m)
+    .bind(r.reprice_over_pct)
+    .fetch_optional(&st.pool)
+    .await?;
+    let name = name.ok_or(ApiError::NotFound("service_area_not_found"))?;
+    // Quotes read the surge cap through the area cache; drop it so the change applies now.
+    st.areas.clear();
+    audit(&st, admin.id, "service_area.pricing_rules", "service_area", id,
+        &format!("Changed pricing rules in {name}: surge cap {:.1}×, service fee {:.1}%", r.max_surge, r.service_fee_bps as f64 / 100.0),
+        Some(&reason)).await;
+    area_pricing(State(st), headers, Path(id)).await
+}
+
+#[derive(Deserialize)]
+pub struct RateReq {
+    #[serde(flatten)]
+    card: RateCard,
+    reason: Option<String>,
+}
+
+async fn update_rate_card(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((id, product)): Path<(Uuid, String)>,
+    Json(req): Json<RateReq>,
+) -> Result<Json<AreaPricing>, ApiError> {
+    let admin = require_admin(&st, &headers).await?;
+    let reason = required_reason(req.reason.as_deref())?;
+    let c = &req.card;
+    let amounts = [c.base_cents, c.per_km_cents, c.per_min_cents, c.minimum_cents, c.booking_fee_cents, c.wait_per_min_cents, c.cancel_fee_cents];
+    let times = [c.wait_grace_secs, c.cancel_grace_secs, c.no_show_wait_secs, c.long_pickup_after_secs];
+    if amounts.iter().any(|v| !(0..=100_000_000).contains(v)) || times.iter().any(|v| !(0..=3_600).contains(v)) || c.long_pickup_after_secs == 0 {
+        return Err(ApiError::BadRequest("invalid_rate_card"));
+    }
+    let done = sqlx::query(
+        "INSERT INTO fare_rates (service_area_id, product_id, base_cents, per_km_cents, per_min_cents, minimum_cents,
+                booking_fee_cents, wait_per_min_cents, wait_grace_secs, cancel_fee_cents, cancel_grace_secs,
+                no_show_wait_secs, long_pickup_after_secs, active, updated_at)
+         SELECT $1, p.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now()
+         FROM ride_products p, service_areas a WHERE p.id = $2 AND a.id = $1
+         ON CONFLICT (service_area_id, product_id) DO UPDATE SET
+            base_cents = EXCLUDED.base_cents, per_km_cents = EXCLUDED.per_km_cents, per_min_cents = EXCLUDED.per_min_cents,
+            minimum_cents = EXCLUDED.minimum_cents, booking_fee_cents = EXCLUDED.booking_fee_cents,
+            wait_per_min_cents = EXCLUDED.wait_per_min_cents, wait_grace_secs = EXCLUDED.wait_grace_secs,
+            cancel_fee_cents = EXCLUDED.cancel_fee_cents, cancel_grace_secs = EXCLUDED.cancel_grace_secs,
+            no_show_wait_secs = EXCLUDED.no_show_wait_secs, long_pickup_after_secs = EXCLUDED.long_pickup_after_secs,
+            active = EXCLUDED.active, updated_at = now()",
+    )
+    .bind(id)
+    .bind(&product)
+    .bind(c.base_cents)
+    .bind(c.per_km_cents)
+    .bind(c.per_min_cents)
+    .bind(c.minimum_cents)
+    .bind(c.booking_fee_cents)
+    .bind(c.wait_per_min_cents)
+    .bind(c.wait_grace_secs)
+    .bind(c.cancel_fee_cents)
+    .bind(c.cancel_grace_secs)
+    .bind(c.no_show_wait_secs)
+    .bind(c.long_pickup_after_secs)
+    .bind(c.active)
+    .execute(&st.pool)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::NotFound("rate_card_not_found"));
+    }
+    let (area, product_name): (String, String) = sqlx::query_as(
+        "SELECT a.name, p.name FROM service_areas a, ride_products p WHERE a.id = $1 AND p.id = $2",
+    )
+    .bind(id)
+    .bind(&product)
+    .fetch_one(&st.pool)
+    .await?;
+    audit(&st, admin.id, "service_area.rate_card", "service_area", id,
+        &format!("Changed the {product_name} rate card in {area}"), Some(&reason)).await;
+    area_pricing(State(st), headers, Path(id)).await
 }
 
 // ---------- S3 media vault ----------

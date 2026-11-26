@@ -179,6 +179,20 @@ data class Ride(
     @SerialName("ended_at") val endedAt: String? = null,
     @SerialName("cancel_reason") val cancelReason: String? = null,
     @SerialName("created_at") val createdAt: String,
+    /** The price the rider agreed to at booking. [fareCents] is what they paid in the end. */
+    @SerialName("upfront_fare_cents") val upfrontFareCents: Long? = null,
+    /** "upfront" (the agreed price held) or "actual" (repriced on measured time and distance). */
+    @SerialName("fare_basis") val fareBasis: String = "upfront",
+    /** Why an "actual" fare replaced the upfront one: "ended_away" or "longer_trip". */
+    @SerialName("fare_change_reason") val fareChangeReason: String? = null,
+    /** Charged for the driver's wait at pickup after the free minutes. */
+    @SerialName("wait_fee_cents") val waitFeeCents: Long = 0,
+    /** Charged when the rider cancelled late or didn't show up. */
+    @SerialName("cancel_fee_cents") val cancelFeeCents: Long = 0,
+    /** Free cancellation ends at this instant (ISO-8601); null when no driver is assigned yet. */
+    @SerialName("cancel_free_until") val cancelFreeUntil: String? = null,
+    /** What cancelling would cost once the free window has passed. */
+    @SerialName("cancel_fee_preview_cents") val cancelFeePreviewCents: Long? = null,
 ) {
     /** Waiting for or riding with a driver (one at a time per rider). */
     val isActive: Boolean get() = status in setOf("requested", "accepted", "arriving", "in_progress")
@@ -542,6 +556,26 @@ object NovaApi {
         json.decodeFromJsonElement(Ride.serializer(), requestAuth("POST", "/v1/rides/${encode(id)}/cancel", body))
     }
 
+    /** One in-trip chat message. [from] is "rider" or "driver". */
+    @Serializable
+    data class ChatMessage(
+        val id: String,
+        val from: String,
+        val text: String,
+        @SerialName("sent_at") val sentAt: String,
+        @SerialName("read_at") val readAt: String? = null,
+    )
+
+    /** The ride's conversation, oldest first. Reading it marks the driver's messages read. */
+    suspend fun rideMessages(rideId: String): List<ChatMessage> = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(ListSerializer(ChatMessage.serializer()), requestAuthElement("GET", "/v1/rides/${encode(rideId)}/messages", null))
+    }
+
+    /** Sends [text] (1–1000 chars) to the driver. `chat_closed` unless a driver is on the ride. */
+    suspend fun sendRideMessage(rideId: String, text: String): ChatMessage = withContext(Dispatchers.IO) {
+        json.decodeFromJsonElement(ChatMessage.serializer(), requestAuth("POST", "/v1/rides/${encode(rideId)}/messages", buildJsonObject { put("text", text) }))
+    }
+
     @Serializable
     data class TrackedRide(
         val status: String,
@@ -635,6 +669,18 @@ object NovaApi {
             kotlinx.serialization.builtins.ListSerializer(MediaItem.serializer()),
             requestAuthElement("GET", "/v1/media/mine", null),
         )
+    }
+
+    /** Server origin, for the live socket (`/v1/ws`). */
+    val baseUrl: String get() = API_BASE_URL
+
+    /** Token for the live socket; null when signed out. */
+    fun accessToken(): String? = AuthStore.session?.accessToken
+
+    /** Rotates the session after the server rejected [accessToken]. Blocking: call off the main thread. */
+    fun refreshAccessToken(): String? {
+        val current = AuthStore.session ?: return null
+        return runCatching { refreshSessionLocked(current).accessToken }.getOrNull()
     }
 
     private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8)

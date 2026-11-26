@@ -255,6 +255,11 @@ async fn next_driver(st: &AppState, ride: Uuid, job: &Job, km: f64, skip: &HashS
            AND NOT EXISTS (SELECT 1 FROM rides r WHERE r.driver_id = d.user_id AND r.status IN ('accepted', 'arriving', 'in_progress'))
            AND NOT EXISTS (SELECT 1 FROM ride_offers o WHERE o.ride_id = $4 AND o.driver_id = d.user_id)
            AND NOT EXISTS (SELECT 1 FROM ride_offers o WHERE o.driver_id = d.user_id AND o.response IS NULL AND o.expires_at > now())
+           -- Destination filter: a driver heading home only gets trips that end closer to home.
+           AND (d.destination IS NULL OR EXISTS (
+                SELECT 1 FROM rides t WHERE t.id = $4
+                  AND ST_Distance(ST_SetSRID(ST_MakePoint(t.dropoff_lng, t.dropoff_lat), 4326)::geography, d.destination)
+                      < ST_Distance(t.pickup, d.destination)))
          ORDER BY c.ord LIMIT 1"
     ))
     .bind(&ids)

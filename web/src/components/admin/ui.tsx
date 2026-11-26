@@ -8,7 +8,25 @@ import { Dialog, DialogBackdrop, DialogContent, DialogDescription, DialogTitle }
 import { Drawer, DrawerBackdrop, DrawerContent, DrawerTitle } from '@ui-sdk/react/drawer'
 import { SegmentedControl, SegmentedControlItem } from '@ui-sdk/react/segmented-control'
 import { Toast, ToastClose, ToastDescription, ToastRegion, ToastTitle, toast } from '@ui-sdk/react/toast'
-import { CircleAlert, CircleCheck, Monitor, Moon, Search, Sun, X } from 'lucide-react'
+import { Menu, MenuCheckboxItem, MenuContent, MenuGroup, MenuGroupLabel, MenuItemIndicator, MenuTrigger } from '@ui-sdk/react/menu'
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  CircleAlert,
+  CircleCheck,
+  Columns3,
+  Monitor,
+  Moon,
+  Search,
+  Sun,
+  TrendingDown,
+  TrendingUp,
+  X,
+} from 'lucide-react'
 
 export const ICON = 'size-4 shrink-0'
 
@@ -80,6 +98,12 @@ const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   'danger-solid': 'bg-bad text-white hover:opacity-90',
 }
 
+const BUTTON_SIZES = { sm: 'h-8 px-3 text-[13px] rounded-lg gap-1.5', md: 'h-9 px-4 text-sm rounded-[10px] gap-2' }
+
+/** The button look as a class, for ui-sdk triggers (menus, tooltips) that render their own button. */
+export const buttonClass = (variant: ButtonVariant = 'secondary', size: 'sm' | 'md' = 'md') =>
+  `inline-flex shrink-0 cursor-pointer items-center justify-center font-medium whitespace-nowrap transition-[background-color,color,opacity,filter] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 data-pending:opacity-60 ${BUTTON_VARIANTS[variant]} ${BUTTON_SIZES[size]}`
+
 export function Button({
   children,
   variant = 'secondary',
@@ -87,12 +111,8 @@ export function Button({
   className = '',
   ...props
 }: React.ComponentProps<typeof SdkButton> & { variant?: ButtonVariant; size?: 'sm' | 'md' }) {
-  const sizes = { sm: 'h-8 px-3 text-[13px] rounded-lg gap-1.5', md: 'h-9 px-4 text-sm rounded-[10px] gap-2' }
   return (
-    <SdkButton
-      {...props}
-      className={`inline-flex shrink-0 cursor-pointer items-center justify-center font-medium whitespace-nowrap transition-[background-color,color,opacity,filter] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 data-pending:opacity-60 ${BUTTON_VARIANTS[variant]} ${sizes[size]} ${className}`}
-    >
+    <SdkButton {...props} className={`${buttonClass(variant, size)} ${className}`}>
       {children}
     </SdkButton>
   )
@@ -547,4 +567,234 @@ export function rowProps(onOpen: () => void, label: string) {
       }
     },
   }
+}
+
+// ---------- menus and hints ----------
+
+/** Shared looks for ui-sdk Menu and Tooltip parts, so every popup reads the same. */
+export const MENU = 'z-50 min-w-52 rounded-xl border border-line bg-surface p-1 text-fg shadow-[0_12px_32px_rgb(0_0_0/0.14)] outline-none'
+export const MENU_ITEM =
+  'flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-sm text-fg outline-none data-highlighted:bg-sunken data-disabled:cursor-not-allowed data-disabled:opacity-45 [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-fg-3'
+export const MENU_LABEL = 'px-2 pt-1.5 pb-1 text-xs text-fg-3'
+export const MENU_SEPARATOR = 'my-1 h-px bg-line'
+export const TIP = 'z-50 rounded-md bg-fg px-2 py-1 text-xs font-medium text-surface shadow-sm'
+
+// ---------- stat card ----------
+
+/**
+ * A section card in the dashboard-01 shape: label, figure, a change chip in the corner,
+ * and a two-line footer saying what the number means.
+ */
+export function StatCard({
+  label,
+  value,
+  change,
+  headline,
+  sub,
+}: {
+  label: string
+  value: string
+  change?: { label: string; tone: 'good' | 'bad' | 'flat' }
+  headline: ReactNode
+  sub: ReactNode
+}) {
+  const Trend = change?.tone === 'bad' ? TrendingDown : TrendingUp
+  return (
+    <div className="flex flex-col justify-between gap-6 rounded-2xl border border-line bg-gradient-to-t from-sunken to-surface p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[13px] text-fg-2">{label}</p>
+          <p className="mt-1.5 font-mono text-[28px] leading-9 font-medium text-fg tabular-nums">{value}</p>
+        </div>
+        {change && change.tone !== 'flat' && (
+          <span
+            className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-line-strong px-1.5 text-xs font-medium tabular-nums ${change.tone === 'good' ? 'text-good' : 'text-bad'}`}
+          >
+            <Trend aria-hidden="true" className="size-3.5" />
+            {change.label.split(' ')[0]}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1 text-[13px]">
+        <p className="flex items-center gap-1.5 font-medium text-fg">{headline}</p>
+        <p className="text-fg-3">{sub}</p>
+      </div>
+    </div>
+  )
+}
+
+// ---------- data table ----------
+
+export type Column<T> = {
+  id: string
+  header: string
+  cell: (row: T) => ReactNode
+  align?: 'right'
+  className?: string
+  /** False keeps the column out of the Columns menu. Defaults to true. */
+  hideable?: boolean
+  /** Hidden until the admin turns it on in the Columns menu. */
+  defaultHidden?: boolean
+}
+
+/**
+ * A record table in the dashboard-01 shape: view tabs and tools above, the table in a bordered
+ * surface, then rows-per-page and paging. Column choices are remembered per table.
+ */
+export function DataTable<T>({
+  id,
+  label,
+  columns,
+  rows,
+  rowKey,
+  onRowClick,
+  rowLabel,
+  tabs,
+  search,
+  toolbar,
+  empty,
+  summary,
+}: {
+  id: string
+  label: string
+  columns: Column<T>[]
+  rows: T[]
+  rowKey: (row: T) => string
+  onRowClick?: (row: T) => void
+  rowLabel?: (row: T) => string
+  tabs?: ReactNode
+  search?: { value: string; onChange: (v: string) => void; placeholder: string }
+  toolbar?: ReactNode
+  empty: { title: string; body?: string }
+  summary?: ReactNode
+}) {
+  const storageKey = `nova_columns_${id}`
+  const [hidden, setHidden] = useState<string[]>(() => columns.filter((c) => c.defaultHidden).map((c) => c.id))
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(storageKey)
+      if (saved) setHidden(JSON.parse(saved) as string[])
+    } catch {
+      // A broken saved value just means the default columns.
+    }
+  }, [storageKey])
+  const setVisible = (colId: string, visible: boolean) => {
+    setHidden((cur) => {
+      const next = visible ? cur.filter((h) => h !== colId) : [...new Set([...cur, colId])]
+      window.localStorage.setItem(storageKey, JSON.stringify(next))
+      return next
+    })
+  }
+
+  const [pageSize, setPageSize] = useState(20)
+  const [page, setPage] = useState(0)
+  useEffect(() => setPage(0), [pageSize, search?.value, rows.length])
+  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize))
+  const current = Math.min(page, pageCount - 1)
+  const visibleRows = rows.slice(current * pageSize, current * pageSize + pageSize)
+  const shown = columns.filter((c) => !hidden.includes(c.id))
+  const hideable = columns.filter((c) => c.hideable !== false)
+  const cellAlign = (c: Column<T>) => (c.align === 'right' ? 'text-right' : '')
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">{tabs}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          {search && <SearchInput label={`Search ${label.toLowerCase()}`} value={search.value} onChange={search.onChange} placeholder={search.placeholder} />}
+          {hideable.length > 1 && (
+            <Menu onCheckedChange={(checked, details) => setVisible(String(details.value), checked)}>
+              <MenuTrigger className={buttonClass('secondary', 'md')}>
+                <Columns3 aria-hidden="true" className="size-4" />
+                <span className="hidden lg:inline">Columns</span>
+                <ChevronDown aria-hidden="true" className="size-4 text-fg-3" />
+              </MenuTrigger>
+              <MenuContent align="end" sideOffset={6} className={MENU}>
+                <MenuGroup>
+                  <MenuGroupLabel className={MENU_LABEL}>Show columns</MenuGroupLabel>
+                  {hideable.map((c) => (
+                    <MenuCheckboxItem key={c.id} value={c.id} checked={!hidden.includes(c.id)} className={MENU_ITEM}>
+                      <MenuItemIndicator keepMounted className="inline-flex size-4 items-center justify-center">
+                        <Check aria-hidden="true" className="size-4 text-fg" />
+                      </MenuItemIndicator>
+                      {c.header}
+                    </MenuCheckboxItem>
+                  ))}
+                </MenuGroup>
+              </MenuContent>
+            </Menu>
+          )}
+          {toolbar}
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-line bg-surface">
+        {rows.length === 0 ? (
+          <EmptyState title={empty.title} body={empty.body} />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className={TABLE} aria-label={label}>
+              <thead className="sticky top-0 z-10 bg-sunken">
+                <tr>
+                  {shown.map((c) => (
+                    <th key={c.id} className={`${TH} ${cellAlign(c)}`}>
+                      {c.header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((r) => (
+                  <tr
+                    key={rowKey(r)}
+                    className={onRowClick ? ROW : '[&:last-child>td]:border-b-0'}
+                    {...(onRowClick ? rowProps(() => onRowClick(r), rowLabel?.(r) ?? 'Open') : {})}
+                  >
+                    {shown.map((c) => (
+                      <td key={c.id} className={`${TD} ${cellAlign(c)} ${c.className ?? ''}`}>
+                        {c.cell(r)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-4 px-1">
+        <p className="text-[13px] text-fg-3">{summary}</p>
+        <div className="flex items-center gap-6">
+          <label className="hidden items-center gap-2 text-[13px] font-medium text-fg lg:flex">
+            Rows per page
+            <SelectInput value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} className="h-8 w-20">
+              {[10, 20, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </SelectInput>
+          </label>
+          <span className="text-[13px] font-medium text-fg tabular-nums">
+            Page {current + 1} of {pageCount}
+          </span>
+          <div className="flex items-center gap-1">
+            <IconButton label="First page" className="hidden size-8 border border-line-strong lg:inline-flex" disabled={current === 0} onClick={() => setPage(0)}>
+              <ChevronsLeft className="size-4" />
+            </IconButton>
+            <IconButton label="Previous page" className="size-8 border border-line-strong" disabled={current === 0} onClick={() => setPage(current - 1)}>
+              <ChevronLeft className="size-4" />
+            </IconButton>
+            <IconButton label="Next page" className="size-8 border border-line-strong" disabled={current >= pageCount - 1} onClick={() => setPage(current + 1)}>
+              <ChevronRight className="size-4" />
+            </IconButton>
+            <IconButton label="Last page" className="hidden size-8 border border-line-strong lg:inline-flex" disabled={current >= pageCount - 1} onClick={() => setPage(pageCount - 1)}>
+              <ChevronsRight className="size-4" />
+            </IconButton>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }

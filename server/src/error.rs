@@ -21,6 +21,18 @@ pub enum ApiError {
     Internal,
 }
 
+impl ApiError {
+    /// The stable code the apps see, for channels other than HTTP (the live socket).
+    pub fn code(&self) -> &'static str {
+        match self {
+            ApiError::BadRequest(c) | ApiError::Forbidden(c) | ApiError::NotFound(c) | ApiError::Conflict(c) | ApiError::Unavailable(c) => c,
+            ApiError::Unauthorized => "unauthorized",
+            ApiError::TooManyRequests(_) => "too_many_requests",
+            ApiError::Internal => "internal_error",
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code) = match self {

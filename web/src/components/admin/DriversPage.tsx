@@ -7,21 +7,14 @@ import {
   Avatar,
   Button,
   ConfirmAction,
-  EmptyState,
+  DataTable,
   PageHeader,
-  Panel,
   Plate,
-  ROW,
-  SearchInput,
   Segmented,
   SidePanel,
   StatusTag,
-  TABLE,
-  TD,
-  TH,
   Tag,
   notify,
-  rowProps,
 } from './ui'
 
 type Filter = 'review' | 'incomplete' | 'approved' | 'suspended' | 'all'
@@ -66,9 +59,10 @@ export function DriversPage({ drivers, onOpenChange }: { drivers: AdminDriver[];
         title="Drivers"
         meta={`${count(counts.approved)} approved · ${count(counts.review)} ready to review · ${count(counts.incomplete)} still applying`}
       />
-      <Panel
-        bodyClassName=""
-        title={
+      <DataTable
+        id="drivers"
+        label="Drivers"
+        tabs={
           <Segmented
             label="Driver filter"
             value={filter}
@@ -82,60 +76,51 @@ export function DriversPage({ drivers, onOpenChange }: { drivers: AdminDriver[];
             ]}
           />
         }
-        action={<SearchInput label="Search drivers" value={query} onChange={setQuery} placeholder="Name, plate, licence, phone" />}
-      >
-        {rows.length === 0 ? (
-          <EmptyState
-            title={filter === 'review' ? 'No applications waiting' : 'No drivers here'}
-            body={filter === 'review' ? 'New applications appear here once a driver has uploaded every document and submitted.' : 'Try another filter or search.'}
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th className={TH}>Driver</th>
-                  <th className={TH}>Car</th>
-                  <th className={TH}>Documents</th>
-                  <th className={TH}>Applied</th>
-                  <th className={TH}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((d) => {
-                  const v = splitVehicle(d.vehicle)
-                  return (
-                    <tr key={d.user_id} className={ROW} {...rowProps(() => onOpenChange(d.user_id), `Review ${fullName(d)}`)}>
-                      <td className={TD}>
-                        <div className="flex items-center gap-3">
-                          <Avatar text={initials(d)} />
-                          <div className="min-w-0">
-                            <div className="truncate font-medium text-fg">{fullName(d)}</div>
-                            <div className="font-mono text-xs text-fg-3">{d.phone_e164 ?? 'No phone'}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className={TD}>
-                        <div className="flex items-center gap-2.5">
-                          {v.plate && <Plate plate={v.plate} />}
-                          <span className="truncate text-fg-2">{v.car}</span>
-                        </div>
-                      </td>
-                      <td className={TD}>
-                        <DocsMeter ready={d.docs_ready} required={d.docs_required} />
-                      </td>
-                      <td className={`${TD} text-fg-2`}>{d.submitted_at ? ago(d.submitted_at) : <span className="text-fg-3">Not submitted</span>}</td>
-                      <td className={TD}>
-                        <StatusTag status={d.status} />
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+        search={{ value: query, onChange: setQuery, placeholder: 'Name, plate, licence, phone' }}
+        rows={rows}
+        rowKey={(d) => d.user_id}
+        onRowClick={(d) => onOpenChange(d.user_id)}
+        rowLabel={(d) => `Review ${fullName(d)}`}
+        empty={
+          filter === 'review'
+            ? { title: 'No applications waiting', body: 'New applications appear here once a driver has uploaded every document and submitted.' }
+            : { title: 'No drivers here', body: 'Try another filter or search.' }
+        }
+        summary={`${count(rows.length)} ${rows.length === 1 ? 'driver' : 'drivers'} shown`}
+        columns={[
+          {
+            id: 'driver',
+            header: 'Driver',
+            hideable: false,
+            cell: (d) => (
+              <div className="flex items-center gap-3">
+                <Avatar text={initials(d)} />
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-fg">{fullName(d)}</div>
+                  <div className="font-mono text-xs text-fg-3">{d.phone_e164 ?? 'No phone'}</div>
+                </div>
+              </div>
+            ),
+          },
+          {
+            id: 'car',
+            header: 'Car',
+            cell: (d) => {
+              const v = splitVehicle(d.vehicle)
+              return (
+                <div className="flex items-center gap-2.5">
+                  {v.plate && <Plate plate={v.plate} />}
+                  <span className="truncate text-fg-2">{v.car}</span>
+                </div>
+              )
+            },
+          },
+          { id: 'licence', header: 'Licence', defaultHidden: true, cell: (d) => <span className="font-mono text-fg-2">{d.licence_number}</span> },
+          { id: 'docs', header: 'Documents', cell: (d) => <DocsMeter ready={d.docs_ready} required={d.docs_required} /> },
+          { id: 'applied', header: 'Applied', className: 'text-fg-2', cell: (d) => (d.submitted_at ? ago(d.submitted_at) : <span className="text-fg-3">Not submitted</span>) },
+          { id: 'status', header: 'Status', cell: (d) => <StatusTag status={d.status} /> },
+        ]}
+      />
     </div>
   )
 }

@@ -10,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,7 +77,10 @@ import com.nova.designsystem.components.NovaShape
 import com.nova.designsystem.components.ShapeBadge
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
-import com.nova.rider.data.Sample
+import com.nova.rider.data.trip.FareSummary
+import com.nova.rider.data.trip.TripFormat
+import com.nova.rider.data.trip.TripStore
+import com.nova.rider.data.trip.tripErrorMessage
 import com.nova.rider.navigation.Call
 import com.nova.rider.navigation.Chat
 import com.nova.rider.navigation.Home
@@ -84,41 +88,66 @@ import com.nova.rider.navigation.Navigator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private data class Message(val me: Boolean, val text: String)
-
 @Composable
 fun ChatScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    val messages = remember {
-        mutableStateListOf(
-            Message(false, "Kia ora! I’m at the corner by the café, white Prius."),
-            Message(true, "Great, coming down now"),
-            Message(false, "No rush, take your time"),
-        )
-    }
+    val scope = rememberCoroutineScope()
+    val ride = TripStore.ride
+    val driver = ride?.driver
+    val driverName = driver?.firstName ?: "your driver"
+    // The server keeps the conversation; the driver's replies arrive over the live socket.
+    val rideId = ride?.id
+    val messages = com.nova.rider.data.trip.RideChat.messages.takeIf { com.nova.rider.data.trip.RideChat.rideId == rideId }.orEmpty()
+    val canSend = rideId != null && ride.status in setOf("accepted", "arriving", "in_progress")
     var draft by rememberSaveable { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        com.nova.rider.data.trip.RideChat.open = true
+        onDispose { com.nova.rider.data.trip.RideChat.open = false }
+    }
+    // Load on open, and again when the socket comes back (it may have missed messages).
+    LaunchedEffect(rideId, com.nova.rider.data.trip.LiveRide.connected) {
+        if (rideId != null && !com.nova.rider.data.trip.RideChat.load(rideId)) error = "Couldn't load messages. Check your connection."
+    }
+    // Opening the screen reads new pushed messages too, so mark them read on the server.
+    LaunchedEffect(messages.size) {
+        if (rideId != null && messages.lastOrNull()?.let { it.from == "driver" && it.readAt == null } == true) com.nova.rider.data.trip.RideChat.load(rideId)
+    }
     fun send(text: String) {
         val t = text.trim()
-        if (t.isNotEmpty()) { messages.add(Message(true, t)); draft = "" }
+        if (t.isEmpty() || rideId == null || com.nova.rider.data.trip.RideChat.sending) return
+        scope.launch {
+            error = null
+            val failed = com.nova.rider.data.trip.RideChat.send(rideId, t)
+            if (failed == null) draft = "" else error = when (failed) {
+                "chat_closed" -> "Messaging is closed for this ride."
+                "empty_message" -> null
+                else -> tripErrorMessage(failed)
+            }
+        }
     }
-    LaunchedEffect(messages.size) { listState.animateScrollToItem(messages.size) }
+    val eta = com.nova.rider.data.trip.LiveRide.fixFor(ride?.id)?.etaSeconds
+    LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size) }
     Column(Modifier.fillMaxSize().background(c.surface).imePadding()) {
         Row(
             Modifier.fillMaxWidth().background(c.surfaceContainerLow).statusBarsPadding().padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             IconButton(onClick = { nav.back() }) { Icon(NovaIcons.Back, "Back") }
-            CookieAvatar(Sample.driverInitials, c.primaryContainer, c.onPrimaryContainer, size = 44.dp)
+            CookieAvatar(driver?.initials ?: "", c.primaryContainer, c.onPrimaryContainer, size = 44.dp)
             Column(Modifier.weight(1f)) {
-                Text(Sample.driverName, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${Sample.carShort} · ${Sample.plate} · 3 min away", fontSize = 13.sp, color = c.onSurfaceVariant)
+                Text(driver?.firstName ?: "Your driver", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                Text(
+                    listOfNotNull(driver?.vehicle?.let { "${it.color} ${it.model}" }, driver?.vehicle?.plate, eta?.takeIf { ride?.status == "accepted" }?.let { "${TripFormat.duration(it)} away" }).joinToString(" · "),
+                    fontSize = 13.sp, color = c.onSurfaceVariant, maxLines = 1,
+                )
             }
             FilledIconButton(
                 onClick = { nav.go(Call) },
                 shapes = IconButtonDefaults.shapes(RoundedCornerShape(16.dp), RoundedCornerShape(24.dp)),
                 modifier = Modifier.size(48.dp),
-            ) { Icon(NovaIcons.Phone, "Call ${Sample.driverName}") }
+            ) { Icon(NovaIcons.Phone, "Call $driverName") }
         }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
@@ -133,29 +162,41 @@ fun ChatScreen(nav: Navigator) {
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Icon(NovaIcons.Lock, null, Modifier.size(14.dp), tint = c.onSecondaryContainer)
-                        Text("Your number stays private · chats are kept for safety", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSecondaryContainer)
+                        Text(
+                            if (canSend) "Your number stays private · chats are kept for safety" else "Messaging opens once a driver is assigned",
+                            fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.onSecondaryContainer,
+                        )
                     }
                 }
             }
-            itemsIndexed(messages) { i, m ->
-                val prevSame = i > 0 && messages[i - 1].me == m.me
-                val nextSame = i < messages.lastIndex && messages[i + 1].me == m.me
+            itemsIndexed(messages, key = { _, m -> m.id }) { i, m ->
+                val me = m.from == "rider"
+                val prevSame = i > 0 && messages[i - 1].from == m.from
+                val nextSame = i < messages.lastIndex && messages[i + 1].from == m.from
                 val big = 22.dp; val sm = 6.dp
-                val shape = if (m.me) RoundedCornerShape(big, if (prevSame) sm else big, if (nextSame) sm else big, big)
+                val shape = if (me) RoundedCornerShape(big, if (prevSame) sm else big, if (nextSame) sm else big, big)
                 else RoundedCornerShape(if (prevSame) sm else big, big, big, if (nextSame) sm else big)
-                Box(Modifier.fillMaxWidth(), contentAlignment = if (m.me) Alignment.CenterEnd else Alignment.CenterStart) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = if (me) Alignment.CenterEnd else Alignment.CenterStart) {
                     Text(
                         m.text,
-                        Modifier.widthIn(max = 270.dp).clip(shape).background(if (m.me) c.primary else c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 12.dp),
-                        fontSize = 16.sp, lineHeight = 22.sp, color = if (m.me) Color.White else c.onSurface,
+                        Modifier.widthIn(max = 270.dp).clip(shape).background(if (me) c.primary else c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 12.dp),
+                        fontSize = 16.sp, lineHeight = 22.sp, color = if (me) Color.White else c.onSurface,
                     )
                 }
             }
-            item { Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) { Text("Read 10:31", fontSize = 12.sp, color = c.outline) } }
+            // Read receipt under the rider's last message, like Uber's "Read 10:31".
+            messages.lastOrNull()?.takeIf { it.from == "rider" }?.let { last ->
+                item {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                        Text(last.readAt?.let { "Read ${clockTime(it)}" } ?: "Sent ${clockTime(last.sentAt)}", fontSize = 12.sp, color = c.outline)
+                    }
+                }
+            }
         }
+        error?.let { Text(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = c.error) }
         Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("On my way", "Can you wait 2 min?", "I’m at the entrance").forEach { q ->
-                Surface(onClick = { send(q) }, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, c.outline), color = Color.Transparent, modifier = Modifier.height(40.dp)) {
+                Surface(onClick = { send(q) }, enabled = canSend, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, c.outline), color = Color.Transparent, modifier = Modifier.height(40.dp)) {
                     Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) { Text(q, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
                 }
             }
@@ -165,9 +206,9 @@ fun ChatScreen(nav: Navigator) {
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Box(Modifier.weight(1f).height(56.dp).clip(CircleShape).background(c.surfaceContainerHighest).padding(horizontal = 20.dp), contentAlignment = Alignment.CenterStart) {
-                if (draft.isEmpty()) Text("Message ${Sample.driverName}", fontSize = 16.sp, color = c.onSurfaceVariant)
+                if (draft.isEmpty()) Text("Message $driverName", fontSize = 16.sp, color = c.onSurfaceVariant)
                 BasicTextField(
-                    draft, { draft = it }, Modifier.fillMaxWidth(), singleLine = true,
+                    draft, { draft = it.take(1000) }, Modifier.fillMaxWidth(), singleLine = true, enabled = canSend,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.onSurface),
                     cursorBrush = SolidColor(c.primary),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -176,6 +217,7 @@ fun ChatScreen(nav: Navigator) {
             }
             FilledIconButton(
                 onClick = { send(draft) },
+                enabled = canSend && draft.isNotBlank() && !com.nova.rider.data.trip.RideChat.sending,
                 shapes = IconButtonDefaults.shapes(RoundedCornerShape(18.dp), RoundedCornerShape(28.dp)),
                 modifier = Modifier.size(56.dp),
             ) { Icon(NovaIcons.Send, "Send") }
@@ -183,13 +225,23 @@ fun ChatScreen(nav: Navigator) {
     }
 }
 
+/** ISO-8601 instant -> local clock time in the device's 12/24 h style. */
+private fun clockTime(iso: String): String =
+    runCatching { java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(java.time.Instant.parse(iso).toEpochMilli())) }.getOrDefault("")
+
 @Composable
 fun CallScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var mute by rememberSaveable { mutableStateOf(false) }
-    var speaker by rememberSaveable { mutableStateOf(true) }
-    var seconds by rememberSaveable { mutableIntStateOf(42) }
-    LaunchedEffect(Unit) { while (true) { delay(1000); seconds++ } }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val driver = TripStore.ride?.driver
+    // Calls go through the phone's dialer (it owns mute, speaker and the call itself). This screen
+    // only stays up when there's no number to call yet.
+    LaunchedEffect(driver?.phone) {
+        driver?.phone?.let { phone ->
+            runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:$phone"))) }
+            nav.back()
+        }
+    }
     val ring = rememberInfiniteTransition(label = "ring")
     val t by ring.animateFloat(0f, 1f, infiniteRepeatable(tween(2000, easing = LinearEasing), RepeatMode.Restart), label = "t")
     val ink = c.onPrimaryContainer
@@ -202,18 +254,16 @@ fun CallScreen(nav: Navigator) {
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(NovaIcons.Lock, null, Modifier.size(14.dp), tint = ink)
-            Text("Calling via Nova · numbers hidden", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ink)
+            Text("Calls use your phone's dialer", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ink)
         }
         Box(Modifier.padding(top = 24.dp).size(220.dp), contentAlignment = Alignment.Center) {
             Box(Modifier.size(220.dp).graphicsLayer { val s = 0.7f + 0.4f * t; scaleX = s; scaleY = s; alpha = 0.25f * (1f - t) }.clip(CircleShape).background(c.primary))
-            ShapeBadge(NovaShape.Cookie, 160.dp, Color.White) { Text(Sample.driverInitials, fontSize = 52.sp, fontWeight = FontWeight.ExtraBold, color = ink) }
+            ShapeBadge(NovaShape.Cookie, 160.dp, Color.White) { Text(driver?.initials ?: "", fontSize = 52.sp, fontWeight = FontWeight.ExtraBold, color = ink) }
         }
-        Text(Sample.driverName, style = MaterialTheme.typography.headlineLarge, color = ink, modifier = Modifier.padding(top = 12.dp))
-        Text("%02d:%02d".format(seconds / 60, seconds % 60), fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = ink)
+        Text(driver?.firstName ?: "Your driver", style = MaterialTheme.typography.headlineLarge, color = ink, modifier = Modifier.padding(top = 12.dp))
+        Text(if (driver == null) "You can call once a driver accepts" else "Opening your dialer…", fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = ink)
         Spacer(Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            CallToggle("Mute", if (mute) NovaIcons.Micoff else NovaIcons.Mic, mute) { mute = it }
-            CallToggle("Speaker", NovaIcons.Speaker, speaker) { speaker = it }
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilledIconButton(
                     onClick = { nav.replaceTop(Chat) },
@@ -251,23 +301,33 @@ private fun CallToggle(label: String, icon: androidx.compose.ui.graphics.vector.
     }
 }
 
-private data class Contact(val key: String, val name: String, val bg: Color, val fg: Color)
-
 @Composable
 fun ShareTripScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
+    val context = androidx.compose.ui.platform.LocalContext.current
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
-    val people = listOf(
-        Contact("M", "Mum", c.primaryContainer, c.onPrimaryContainer),
-        Contact("R", "Rohan", NovaPalette.Mint, NovaPalette.OnMint),
-        Contact("J", "Jess", c.tertiaryContainer, c.onTertiaryContainer),
-    )
-    val selected = remember { mutableStateListOf("M", "R") }
-    var auto by rememberSaveable { mutableStateOf(true) }
+    val ride = TripStore.ride
+    // The ride's public live-tracking link (opens Nova if installed, the web page otherwise).
+    val link = ride?.trackUrl.orEmpty()
+    // Trusted contacts are the rider's emergency contacts on their Nova account.
+    LaunchedEffect(Unit) { com.nova.rider.data.profile.ProfileStore.refreshIfNeeded() }
+    val people = com.nova.rider.data.profile.ProfileStore.contacts
+    val palette = listOf(c.primaryContainer to c.onPrimaryContainer, NovaPalette.Mint to NovaPalette.OnMint, c.tertiaryContainer to c.onTertiaryContainer)
+    // The night auto-share choice and its contacts are kept on this phone.
+    val prefs = remember { context.getSharedPreferences("nova_share", android.content.Context.MODE_PRIVATE) }
+    val selected = remember { mutableStateListOf<String>().apply { addAll(prefs.getStringSet("contacts", emptySet()).orEmpty()) } }
+    var auto by remember { mutableStateOf(prefs.getBoolean("auto_night", false)) }
+    LaunchedEffect(auto, selected.toList()) { prefs.edit().putBoolean("auto_night", auto).putStringSet("contacts", selected.toSet()).apply() }
     var copied by remember { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
     fun close(after: () -> Unit = {}) = scope.launch { sheet.hide() }.invokeOnCompletion { after() }
+    val message = buildString {
+        append("I'm on a Nova ride")
+        ride?.dropoff?.name?.let { append(" to $it") }
+        ride?.driver?.let { append(" with ${it.firstName}, ${it.vehicle.label} ${it.vehicle.plate}") }
+        append(". Follow it live: $link")
+    }
     Box(Modifier.fillMaxSize()) {
         EnRouteMap()
         ModalBottomSheet(onDismissRequest = { nav.back() }, sheetState = sheet, containerColor = c.surface) {
@@ -277,39 +337,49 @@ fun ShareTripScreen(nav: Navigator) {
                     Text("They'll see your live location, car and ETA until you arrive.", fontSize = 15.sp, color = c.onSurfaceVariant)
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-                    people.forEach { p ->
-                        val on = p.key in selected
+                    people.take(3).forEachIndexed { i, p ->
+                        val on = p.id in selected
+                        val (bg, fg) = palette[i % palette.size]
                         val radius by animateDpAsState(if (on) 22.dp else 32.dp, MaterialTheme.motionScheme.fastSpatialSpec())
                         Column(
-                            Modifier.clip(RoundedCornerShape(16.dp)).toggleable(on, role = Role.Checkbox) { if (it) selected.add(p.key) else selected.remove(p.key) }.padding(4.dp),
+                            Modifier.clip(RoundedCornerShape(16.dp)).toggleable(on, role = Role.Checkbox) { if (it) selected.add(p.id) else selected.remove(p.id) }.padding(4.dp),
                             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Box(
                                 Modifier.size(64.dp).then(if (on) Modifier.border(3.dp, c.primary, RoundedCornerShape(radius + 3.dp)).padding(0.dp) else Modifier)
-                                    .clip(RoundedCornerShape(radius)).background(p.bg),
+                                    .clip(RoundedCornerShape(radius)).background(bg),
                                 contentAlignment = Alignment.Center,
-                            ) { Text(p.key, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = p.fg) }
-                            Text(p.name, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            ) { Text(p.name.trim().take(1).uppercase(), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = fg) }
+                            Text(p.name.substringBefore(' '), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                         }
                     }
-                    Column(Modifier.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.size(64.dp).border(2.dp, c.outline, CircleShape), contentAlignment = Alignment.Center) { Icon(NovaIcons.Plus, "Add contact") }
-                        Text("Add", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    // Anyone else: the system share sheet (any messaging app).
+                    Column(
+                        Modifier.clip(RoundedCornerShape(16.dp)).clickable(enabled = link.isNotBlank()) {
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, message)
+                            context.startActivity(android.content.Intent.createChooser(send, "Share trip"))
+                        }.padding(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Box(Modifier.size(64.dp).border(2.dp, c.outline, CircleShape), contentAlignment = Alignment.Center) { Icon(NovaIcons.Plus, "Share with someone else") }
+                        Text(if (people.isEmpty()) "Share" else "Other", fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
                 }
+                if (people.isEmpty()) Text("Add trusted contacts in Safety to share with them in one tap.", fontSize = 14.sp, color = c.onSurfaceVariant)
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Icon(NovaIcons.Link, null)
-                    Text("nova.nz/t/K7Q2-PNSB", Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(link.removePrefix("https://").ifBlank { "Link appears once your ride is booked" }, Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     Surface(
                         onClick = {
                             scope.launch {
-                                clipboard.setClipEntry(androidx.compose.ui.platform.ClipEntry(android.content.ClipData.newPlainText("Nova trip link", "https://nova.nz/t/K7Q2-PNSB")))
+                                clipboard.setClipEntry(androidx.compose.ui.platform.ClipEntry(android.content.ClipData.newPlainText("Nova trip link", link)))
                                 copied = true
                             }
                         },
+                        enabled = link.isNotBlank(),
                         shape = CircleShape, color = c.secondaryContainer, contentColor = c.onSecondaryContainer, modifier = Modifier.height(40.dp),
                     ) {
                         Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -325,10 +395,18 @@ fun ShareTripScreen(nav: Navigator) {
                     }
                     Switch(checked = auto, onCheckedChange = null)
                 }
-                val n = selected.size
+                val chosen = people.filter { it.id in selected }
+                val n = chosen.size
                 NovaButton(
                     if (n > 0) "Share with $n ${if (n > 1) "people" else "person"}" else "Choose who to share with",
-                    onClick = { close { nav.back() } }, enabled = n > 0,
+                    onClick = {
+                        // One text to all chosen contacts through the phone's messaging app.
+                        val to = chosen.joinToString(";") { it.phone }
+                        val sms = android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:$to")).putExtra("sms_body", message)
+                        runCatching { context.startActivity(sms) }
+                        close { nav.back() }
+                    },
+                    enabled = n > 0 && link.isNotBlank(),
                 )
             }
         }
@@ -342,24 +420,51 @@ fun CancelRideScreen(nav: Navigator) {
     val scope = rememberCoroutineScope()
     val reasons = listOf("Driver is taking too long", "I changed my plans", "Booked by mistake", "Driver asked me to cancel", "Something else")
     var reason by rememberSaveable { mutableIntStateOf(-1) }
-    var freeSeconds by rememberSaveable { mutableIntStateOf(48) }
-    LaunchedEffect(Unit) { while (freeSeconds > 0) { delay(1000); freeSeconds-- } }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val ride = TripStore.ride
+    // Ticks so the free window counts down and flips to the fee the moment it ends.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
+    // Fresh fee preview and free-until from the server when the sheet opens.
+    LaunchedEffect(Unit) { TripStore.refreshRide() }
+    val freeLeft = ride?.let { FareSummary.freeCancelSecondsLeft(it, now) }
+    val fee = ride?.let { FareSummary.cancelFeeNow(it, now) } ?: 0L
+    val laterFee = ride?.cancelFeePreviewCents?.takeIf { it > 0 }
+    val driverName = ride?.driver?.firstName ?: "your driver"
+    fun money(cents: Long) = ride?.let { TripFormat.money(cents, it.currency) } ?: ""
     Box(Modifier.fillMaxSize()) {
         EnRouteMap()
         ModalBottomSheet(onDismissRequest = { nav.back() }, sheetState = sheet, containerColor = c.surface) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Cancel this ride?", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp))
-                    val free = freeSeconds > 0
+                    val free = fee == 0L
                     Row(
                         Modifier.height(32.dp).clip(RoundedCornerShape(10.dp)).background(if (free) NovaPalette.Mint else c.errorContainer).padding(horizontal = 12.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         val fg = if (free) NovaPalette.OnMint else c.onErrorContainer
                         Icon(NovaIcons.Clock, null, Modifier.size(16.dp), tint = fg)
-                        Text(if (free) "Free to cancel for 0:%02d more".format(freeSeconds) else "A $6.00 fee now applies", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = fg)
+                        Text(
+                            when {
+                                !free -> "A ${money(fee)} fee applies"
+                                freeLeft != null && freeLeft > 0 && laterFee != null -> "Free to cancel for %d:%02d more".format(freeLeft / 60, freeLeft % 60)
+                                else -> "Free to cancel"
+                            },
+                            fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = fg,
+                        )
                     }
-                    Text("After that, a $6.00 fee goes to ${Sample.driverName} for his time.", fontSize = 14.sp, color = c.onSurfaceVariant)
+                    val detail = when {
+                        ride == null -> null
+                        !free && ride.status == "arriving" -> "$driverName is waiting at your pickup. The fee pays for their time."
+                        !free -> "$driverName is already on the way. The fee pays for their time."
+                        ride.driver == null -> "No driver has accepted yet, so there's no fee."
+                        freeLeft != null && freeLeft > 0 && laterFee != null -> "After that, a ${money(laterFee)} fee goes to $driverName for their time."
+                        else -> null
+                    }
+                    if (detail != null) Text(detail, fontSize = 14.sp, color = c.onSurfaceVariant)
+                    error?.let { Text(it, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.error) }
                 }
                 Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     reasons.forEachIndexed { i, t ->
@@ -385,7 +490,21 @@ fun CancelRideScreen(nav: Navigator) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NovaButton("Keep my ride", onClick = { scope.launch { sheet.hide() }.invokeOnCompletion { nav.back() } }, modifier = Modifier.weight(1f), height = 56.dp)
                     NovaButton(
-                        "Cancel ride", onClick = { nav.reset(Home) }, modifier = Modifier.weight(1f), height = 56.dp, enabled = reason >= 0,
+                        when { busy -> "Cancelling…"; fee > 0 -> "Cancel · ${money(fee)}"; else -> "Cancel ride" },
+                        onClick = {
+                            scope.launch {
+                                busy = true
+                                error = null
+                                if (TripStore.cancelRide(reasons[reason])) {
+                                    TripStore.forgetRide()
+                                    nav.reset(Home)
+                                } else {
+                                    error = tripErrorMessage(TripStore.bookError)
+                                }
+                                busy = false
+                            }
+                        },
+                        modifier = Modifier.weight(1f), height = 56.dp, enabled = reason >= 0 && !busy && ride != null,
                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = c.errorContainer, contentColor = c.onErrorContainer),
                     )
                 }

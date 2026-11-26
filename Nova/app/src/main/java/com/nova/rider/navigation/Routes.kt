@@ -40,7 +40,8 @@ import kotlinx.serialization.Serializable
 
 // Activity, wallet, account & support
 @Serializable data object Activity : Route
-@Serializable data object Receipt : Route
+/** Trip details and receipt for one ride. */
+@Serializable data class Receipt(val rideId: String) : Route
 @Serializable data object Wallet : Route
 @Serializable data object AddCard : Route
 @Serializable data object Account : Route

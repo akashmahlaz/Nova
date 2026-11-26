@@ -571,6 +571,72 @@ pub async fn compute_route(
     })
 }
 
+/// One turn-by-turn instruction.
+#[derive(Debug, serde::Serialize)]
+pub struct Step {
+    pub instruction: String,
+    pub distance_meters: i64,
+    /// Routes API maneuver, e.g. TURN_LEFT, ROUNDABOUT_RIGHT, STRAIGHT (empty when unknown).
+    pub maneuver: String,
+}
+
+#[derive(Debug)]
+pub struct Navigation {
+    pub route: Route,
+    pub steps: Vec<Step>,
+}
+
+/// Routes API computeRoutes for a driver heading to the next stop: traffic-aware, with
+/// navigation instructions for the turn card.
+pub async fn navigation_route(http: &reqwest::Client, key: &str, origin: LatLng, destination: LatLng) -> Result<Navigation, ApiError> {
+    let body = json!({
+        "origin": origin.waypoint(),
+        "destination": destination.waypoint(),
+        "travelMode": "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE",
+        "computeAlternativeRoutes": false,
+        "units": "METRIC",
+    });
+    let res = http
+        .post(ROUTES_URL)
+        .timeout(TIMEOUT)
+        .header("X-Goog-Api-Key", key)
+        .header(
+            "X-Goog-FieldMask",
+            "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,\
+             routes.legs.steps.distanceMeters,routes.legs.steps.navigationInstruction",
+        )
+        .json(&body)
+        .send()
+        .await;
+    let v = read_json(res, "navigation route").await?;
+    let route = v["routes"].get(0).ok_or(ApiError::BadRequest("no_route"))?;
+    let duration_seconds = route["duration"]
+        .as_str()
+        .and_then(|d| d.trim_end_matches('s').parse::<f64>().ok())
+        .map(|d| d.round() as i64)
+        .unwrap_or(0);
+    let steps = route["legs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|leg| leg["steps"].as_array().cloned().unwrap_or_default())
+        .map(|st| Step {
+            instruction: st["navigationInstruction"]["instructions"].as_str().unwrap_or_default().to_string(),
+            distance_meters: st["distanceMeters"].as_i64().unwrap_or(0),
+            maneuver: st["navigationInstruction"]["maneuver"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect();
+    Ok(Navigation {
+        route: Route {
+            distance_meters: route["distanceMeters"].as_i64().unwrap_or(0),
+            duration_seconds,
+            encoded_polyline: route["polyline"]["encodedPolyline"].as_str().unwrap_or_default().to_string(),
+        },
+        steps,
+    })
+}
+
 /// Turn a Google response into JSON, logging the provider body on failure so the cause
 /// (API not enabled, key restricted, quota exceeded) shows up in the server terminal.
 async fn read_json(res: reqwest::Result<reqwest::Response>, what: &'static str) -> Result<Value, ApiError> {

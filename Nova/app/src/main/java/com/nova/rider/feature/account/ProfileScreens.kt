@@ -82,7 +82,6 @@ import com.nova.designsystem.components.SwitchRow
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
 import com.nova.designsystem.theme.NovaTheme
-import com.nova.rider.data.Sample
 import com.nova.rider.data.auth.AuthStore
 import com.nova.rider.data.auth.NovaApi
 import com.nova.rider.data.auth.PasskeyManager
@@ -925,8 +924,8 @@ fun OffersScreen(nav: Navigator) {
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OfferTile("$5 off Electric", "2 left this month", NovaIcons.Flash, c.primaryContainer, c.onPrimaryContainer, RoundedCornerShape(28.dp))
-            OfferTile("Give $10, get $10", "Invite friends", NovaIcons.Gift, NovaPalette.Mint, NovaPalette.OnMint, RoundedCornerShape(28.dp, 28.dp, 28.dp, 8.dp))
+            OfferTile("${com.nova.rider.data.trip.TripFormat.money(500, com.nova.rider.data.trip.TripFormat.localCurrencyCode())} off Electric", "2 left this month", NovaIcons.Flash, c.primaryContainer, c.onPrimaryContainer, RoundedCornerShape(28.dp))
+            OfferTile("Give ${com.nova.rider.data.trip.TripFormat.money(1000, com.nova.rider.data.trip.TripFormat.localCurrencyCode())}, get ${com.nova.rider.data.trip.TripFormat.money(1000, com.nova.rider.data.trip.TripFormat.localCurrencyCode())}", "Invite friends", NovaIcons.Gift, NovaPalette.Mint, NovaPalette.OnMint, RoundedCornerShape(28.dp, 28.dp, 28.dp, 8.dp))
         }
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(start = 18.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -938,7 +937,7 @@ fun OffersScreen(nav: Navigator) {
                 onClick = {
                     val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                         type = "text/plain"
-                        putExtra(android.content.Intent.EXTRA_TEXT, "Get $10 off your first Nova ride with my code AKASH10")
+                        putExtra(android.content.Intent.EXTRA_TEXT, "Get ${com.nova.rider.data.trip.TripFormat.money(1000, com.nova.rider.data.trip.TripFormat.localCurrencyCode())} off your first Nova ride with my code AKASH10")
                     }
                     context.startActivity(android.content.Intent.createChooser(send, null))
                 },

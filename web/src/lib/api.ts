@@ -81,6 +81,21 @@ export interface AdminRideDetail {
   ended_at: string | null
   offers_sent: number
   offers_declined: number
+  upfront_fare_cents: number | null
+  fare_basis: 'upfront' | 'actual'
+  fare_change_reason: 'longer_trip' | 'ended_away' | null
+  actual_distance_meters: number | null
+  actual_duration_seconds: number | null
+  wait_seconds: number | null
+  wait_fee_cents: number
+  cancel_fee_cents: number
+  long_pickup_cents: number
+  service_fee_cents: number | null
+  driver_earnings_cents: number | null
+  booking_fee_cents: number | null
+  arrived_distance_m: number | null
+  dropoff_distance_m: number | null
+  trail_points: number
 }
 
 export interface DailyRidePoint {
@@ -122,7 +137,7 @@ export interface AdminOverview {
   s3_region: string | null
   /** Drivers with a live heartbeat in dispatch right now. */
   online_drivers: number
-  /** Last 14 days, oldest first. */
+  /** The requested number of days (14 by default), oldest first. */
   daily_rides: DailyRidePoint[]
 }
 
@@ -221,6 +236,42 @@ export interface AdminServiceArea {
   rate_count: number
   ride_count: number
   created_at: string
+}
+
+export interface AreaRules {
+  max_surge: number
+  service_fee_bps: number
+  cancel_fee_max_bps: number
+  fare_rounding_minor: number
+  arrive_radius_m: number
+  dropoff_radius_m: number
+  reprice_over_pct: number
+}
+
+export interface RateCard {
+  product_id: string
+  product_name: string
+  base_cents: number
+  per_km_cents: number
+  per_min_cents: number
+  minimum_cents: number
+  booking_fee_cents: number
+  wait_per_min_cents: number
+  wait_grace_secs: number
+  cancel_fee_cents: number
+  cancel_grace_secs: number
+  no_show_wait_secs: number
+  long_pickup_after_secs: number
+  active: boolean
+  updated_at: string
+}
+
+export interface AreaPricing {
+  id: string
+  name: string
+  currency: string
+  rules: AreaRules
+  rates: RateCard[]
 }
 
 export interface AdminMediaItem {
@@ -375,7 +426,8 @@ export const novaAdminApi = {
     saveStoredSession(null)
   },
 
-  getOverview: () => requestJson<AdminOverview>('/v1/admin/overview', {}, true),
+  /** `days` of daily trips, ending today (server default 14, clamped to 1–180). */
+  getOverview: (days?: number) => requestJson<AdminOverview>(`/v1/admin/overview${days ? `?days=${days}` : ''}`, {}, true),
 
   listUsers: () => requestJson<AdminUser[]>('/v1/admin/users', {}, true),
 
@@ -461,6 +513,22 @@ export const novaAdminApi = {
     requestJson<void>(
       `/v1/admin/service-areas/${id}`,
       { method: 'PATCH', body: JSON.stringify({ active }) },
+      true,
+    ),
+
+  getAreaPricing: (id: string) => requestJson<AreaPricing>(`/v1/admin/service-areas/${id}/pricing`, {}, true),
+
+  updateAreaRules: (id: string, rules: AreaRules, reason: string) =>
+    requestJson<AreaPricing>(
+      `/v1/admin/service-areas/${id}/pricing`,
+      { method: 'PUT', body: JSON.stringify({ ...rules, reason }) },
+      true,
+    ),
+
+  updateRateCard: (id: string, card: RateCard, reason: string) =>
+    requestJson<AreaPricing>(
+      `/v1/admin/service-areas/${id}/pricing/${card.product_id}`,
+      { method: 'PUT', body: JSON.stringify({ ...card, reason }) },
       true,
     ),
 

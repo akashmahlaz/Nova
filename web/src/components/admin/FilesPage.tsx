@@ -3,7 +3,7 @@ import { ExternalLink, FileText, Upload } from 'lucide-react'
 import { type AdminMediaItem, type AdminOverview, novaAdminApi } from '../../lib/api'
 import { formatError } from '../../lib/errors'
 import { ago, bytes, count, dateTime } from '../../lib/format'
-import { Button, ConfirmAction, EmptyState, Modal, PageHeader, Panel, ROW, SearchInput, Segmented, SelectInput, StatusTag, TABLE, TD, TH, notify, rowProps } from './ui'
+import { Button, ConfirmAction, DataTable, Modal, PageHeader, Segmented, SelectInput, StatusTag, notify } from './ui'
 
 export const CATEGORY_LABEL: Record<AdminMediaItem['category'], string> = {
   avatar: 'Profile photo',
@@ -81,9 +81,10 @@ export function FilesPage({ media, overview, onChanged, onOpenDriver }: { media:
           </>
         }
       />
-      <Panel
-        bodyClassName=""
-        title={
+      <DataTable
+        id="files"
+        label="Files"
+        tabs={
           <Segmented
             label="File filter"
             value={filter}
@@ -96,58 +97,47 @@ export function FilesPage({ media, overview, onChanged, onOpenDriver }: { media:
             ]}
           />
         }
-        action={
-          <>
-            <SelectInput aria-label="File type" value={category} onChange={(e) => setCategory(e.target.value as typeof category)} className="w-44">
-              <option value="all">All types</option>
-              {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v}
-                </option>
-              ))}
-            </SelectInput>
-            <SearchInput label="Search files" value={query} onChange={setQuery} placeholder="Owner or file name" />
-          </>
+        search={{ value: query, onChange: setQuery, placeholder: 'Owner or file name' }}
+        toolbar={
+          <SelectInput aria-label="File type" value={category} onChange={(e) => setCategory(e.target.value as typeof category)} className="w-44">
+            <option value="all">All types</option>
+            {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
+              <option key={k} value={k}>
+                {v}
+              </option>
+            ))}
+          </SelectInput>
         }
-      >
-        {rows.length === 0 ? (
-          <EmptyState title={filter === 'review' ? 'Nothing to review' : 'No files match'} body={filter === 'review' ? 'Documents drivers upload appear here until someone checks them.' : 'Try another filter or search.'} />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th className={TH}>File</th>
-                  <th className={TH}>Belongs to</th>
-                  <th className={TH}>Type</th>
-                  <th className={`${TH} text-right`}>Size</th>
-                  <th className={TH}>Uploaded</th>
-                  <th className={TH}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((m) => (
-                  <tr key={m.id} className={ROW} {...rowProps(() => setPreview(m), `Open ${m.file_name}`)}>
-                    <td className={`${TD} max-w-[280px]`}>
-                      <div className="flex items-center gap-3">
-                        <Thumb item={m} />
-                        <span className="truncate text-fg">{m.file_name}</span>
-                      </div>
-                    </td>
-                    <td className={`${TD} text-fg-2`}>{m.owner_name}</td>
-                    <td className={`${TD} text-fg-2`}>{CATEGORY_LABEL[m.category]}</td>
-                    <td className={`${TD} text-right font-mono text-fg-2 tabular-nums`}>{bytes(m.size_bytes)}</td>
-                    <td className={`${TD} whitespace-nowrap text-fg-2`}>{ago(m.created_at)}</td>
-                    <td className={TD}>
-                      <StatusTag status={m.status} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+        rows={rows}
+        rowKey={(m) => m.id}
+        onRowClick={setPreview}
+        rowLabel={(m) => `Open ${m.file_name}`}
+        empty={
+          filter === 'review'
+            ? { title: 'Nothing to review', body: 'Documents drivers upload appear here until someone checks them.' }
+            : { title: 'No files match', body: 'Try another filter or search.' }
+        }
+        summary={`${count(rows.length)} ${rows.length === 1 ? 'file' : 'files'} shown`}
+        columns={[
+          {
+            id: 'file',
+            header: 'File',
+            hideable: false,
+            className: 'max-w-[280px]',
+            cell: (m) => (
+              <div className="flex items-center gap-3">
+                <Thumb item={m} />
+                <span className="truncate text-fg">{m.file_name}</span>
+              </div>
+            ),
+          },
+          { id: 'owner', header: 'Belongs to', className: 'text-fg-2', cell: (m) => m.owner_name },
+          { id: 'type', header: 'Type', className: 'text-fg-2', cell: (m) => CATEGORY_LABEL[m.category] },
+          { id: 'size', header: 'Size', align: 'right', className: 'font-mono text-fg-2 tabular-nums', cell: (m) => bytes(m.size_bytes) },
+          { id: 'uploaded', header: 'Uploaded', className: 'whitespace-nowrap text-fg-2', cell: (m) => ago(m.created_at) },
+          { id: 'status', header: 'Status', cell: (m) => <StatusTag status={m.status} /> },
+        ]}
+      />
 
       {preview && (
         <Modal

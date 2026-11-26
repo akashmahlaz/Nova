@@ -104,7 +104,6 @@ import com.nova.rider.feature.common.decodeRoute
 import com.nova.rider.feature.common.fitTo
 import com.nova.rider.feature.common.toLatLng
 import kotlinx.coroutines.launch
-import com.nova.rider.data.Sample
 import com.nova.rider.feature.common.DotKind
 import com.nova.rider.feature.common.MapFab
 import com.nova.rider.feature.common.MapLabel
@@ -484,8 +483,8 @@ fun FindingDriverScreen(nav: Navigator) {
     var cancelling by remember { mutableStateOf(false) }
     val ride = TripStore.ride
 
-    // Follow the ride. Polling every 3 s is the stopgap until dispatch pushes updates over a
-    // WebSocket (driver phase); a GET by primary key is cheap for the server.
+    // Follow the ride: the live socket pushes status changes; a GET every 3 s (15 s while the
+    // socket is open) is the safety net.
     LaunchedEffect(Unit) {
         if (TripStore.ride == null && TripStore.loadActiveRide() == null) {
             nav.back()
@@ -498,8 +497,8 @@ fun FindingDriverScreen(nav: Navigator) {
                 "accepted", "arriving", "in_progress" -> { nav.replaceTop(DriverEnRoute); break }
                 "cancelled", "completed" -> break
             }
-            kotlinx.coroutines.delay(3_000)
-            TripStore.refreshRide()
+            TripStore.awaitRideChange(now.status)
+            if (TripStore.ride?.status == now.status) TripStore.refreshRide()
         }
     }
 

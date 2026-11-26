@@ -110,6 +110,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
     implementation(libs.google.maps.compose)
+    implementation(libs.okhttp)
     implementation(libs.google.play.services.location)
 
     debugImplementation(libs.androidx.compose.ui.tooling)

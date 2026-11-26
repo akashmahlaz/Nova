@@ -103,6 +103,8 @@ pub struct ServiceArea {
     pub name: String,
     pub region_code: String,
     pub currency: String,
+    /// Highest surge allowed here (a legal cap in some countries).
+    pub max_surge: f64,
 }
 
 /// Per-process memo of "which service area is this H3 cell in".
@@ -114,11 +116,18 @@ pub struct ServiceArea {
 #[derive(Clone, Default)]
 pub struct AreaCache(Arc<DashMap<u64, (Option<ServiceArea>, Instant)>>);
 
+impl AreaCache {
+    /// Forget every cached area, e.g. after an admin changes an area's rules.
+    pub fn clear(&self) {
+        self.0.clear();
+    }
+}
+
 const AREA_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const AREA_CACHE_MAX: usize = 200_000;
 const AREA_CACHE_RES: h3o::Resolution = h3o::Resolution::Nine;
 
-fn maps_key(st: &AppState) -> Result<&str, ApiError> {
+pub(crate) fn maps_key(st: &AppState) -> Result<&str, ApiError> {
     st.cfg.google_maps_api_key.as_deref().ok_or(ApiError::Unavailable("maps_unavailable"))
 }
 
@@ -158,7 +167,7 @@ pub async fn area_at(st: &AppState, at: LatLng) -> Result<Option<ServiceArea>, A
     // edges, so a planar ST_Intersects is both fast (index-assisted) and accurate here.
     let point: geo_types::Geometry<f64> = geo_types::Point::new(at.lng, at.lat).into();
     let row = sqlx::query_as::<_, ServiceArea>(
-        "SELECT a.id, a.name, a.region_code, a.currency
+        "SELECT a.id, a.name, a.region_code, a.currency, a.max_surge
          FROM service_area_parts p
          JOIN service_areas a ON a.id = p.service_area_id
          WHERE a.active AND ST_Intersects(p.part, ST_SetSRID($1::geometry, 4326))
@@ -671,7 +680,7 @@ async fn quote(
 
     // 4. Surge for the pickup hexagon, and count this request as demand in that hexagon.
     let cell = pricing::cell_for(pickup.lat, pickup.lng).ok_or(ApiError::BadRequest("invalid_location"))?;
-    let surge = pricing::surge_multiplier(&mut redis, cell).await?;
+    let surge = pricing::surge_multiplier(&mut redis, cell).await?.min(area.max_surge.max(1.0));
     pricing::record_demand(&mut redis, cell).await?;
 
     let options: Vec<FareOption> = rates

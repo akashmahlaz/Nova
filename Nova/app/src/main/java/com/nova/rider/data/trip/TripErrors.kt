@@ -10,6 +10,7 @@ fun tripErrorMessage(code: String?): String = when (code) {
     "maps_unavailable", "maps_failed" -> "Maps are having trouble. Try again in a moment."
     "too_many_requests" -> "You're going a bit fast. Try again in a minute."
     "network_error" -> "No connection. Check your internet and try again."
+    "account_deactivated" -> "This account has been closed. Contact support."
     "unauthorized" -> "Please sign in again."
     "quote_expired" -> "That price expired. Check the new price and book again."
     "quote_already_booked" -> "This ride is already booked."

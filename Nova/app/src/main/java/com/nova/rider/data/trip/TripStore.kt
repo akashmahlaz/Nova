@@ -24,6 +24,7 @@ import com.nova.rider.data.auth.Passenger
 import com.nova.rider.data.auth.Ride
 import com.nova.rider.data.auth.RideQuote
 import com.nova.rider.data.auth.SavedPlace
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -374,6 +375,17 @@ object TripStore {
     suspend fun refreshRide(): Ride? {
         val current = ride ?: return null
         return runCatching { NovaApi.ride(current.id) }.getOrNull()?.also { ride = it }
+    }
+
+    /**
+     * Waits until the followed ride's status differs from [from] (a socket push refreshed it) or
+     * the poll interval passes: [pollMs] while the live socket is open, 3 s while it's not.
+     */
+    suspend fun awaitRideChange(from: String?, pollMs: Long = 15_000) {
+        val wait = if (LiveRide.connected) pollMs else 3_000
+        kotlinx.coroutines.withTimeoutOrNull(wait) {
+            androidx.compose.runtime.snapshotFlow { ride?.status }.first { it != from }
+        }
     }
 
     /** Resumes a ride in progress after the app restarts. */

@@ -67,7 +67,7 @@ import com.nova.rider.data.trip.TripFormat
 import com.nova.rider.data.trip.TripStore
 import com.nova.rider.data.trip.tripErrorMessage
 import kotlinx.coroutines.launch
-import com.nova.rider.data.Sample
+import com.nova.rider.feature.common.fitTo
 import com.nova.rider.feature.common.ConnectedButton
 import com.nova.rider.feature.common.MiniRouteMap
 import com.nova.rider.feature.common.TabPage
@@ -203,14 +203,14 @@ fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
                     }
                     val (statusText, statusColor) = when (t.status) {
                         "completed" -> "Paid" to NovaTheme.colors.success
-                        "cancelled" -> "Cancelled" to c.error
+                        "cancelled" -> (if (t.cancelFeeCents > 0) "Cancellation fee" else "Cancelled") to c.error
                         "no_drivers" -> "No driver found" to c.onSurfaceVariant
                         else -> "In progress" to c.primary
                     }
                     Surface(
                         onClick = {
                             when {
-                                t.status == "completed" -> nav.go(Receipt)
+                                t.status == "completed" || t.status == "cancelled" -> nav.go(Receipt(t.id))
                                 // Finding driver resumes the active ride from the server.
                                 t.isActive -> { TripStore.forgetRide(); nav.go(com.nova.rider.navigation.FindingDriver) }
                             }
@@ -224,7 +224,7 @@ fun ActivityScreen(nav: Navigator, empty: Boolean = false) {
                                 Text("${RideTime.day(t.requestedAt ?: t.createdAt)} · ${RideTime.time(t.requestedAt ?: t.createdAt)} · ${t.productName}", fontSize = 13.sp, color = c.onSurfaceVariant)
                             }
                             Column(horizontalAlignment = Alignment.End) {
-                                Text(TripFormat.money(t.fareCents, t.currency), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                                Text(TripFormat.money(if (t.isActive) t.fareCents else com.nova.rider.data.trip.FareSummary.total(t), t.currency), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
                                 Text(statusText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = statusColor)
                             }
                         }
@@ -299,39 +299,79 @@ fun EmptyActivity(onBook: () -> Unit) {
 }
 
 @Composable
-fun ReceiptScreen(nav: Navigator) {
+fun ReceiptScreen(nav: Navigator, rideId: String) {
     val c = MaterialTheme.colorScheme
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var ride by androidx.compose.runtime.remember { mutableStateOf(TripStore.ride?.takeIf { it.id == rideId }) }
+    var error by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    suspend fun load() {
+        error = null
+        runCatching { NovaApi.ride(rideId) }.onSuccess { ride = it }.onFailure { if (ride == null) error = tripErrorMessage(it) }
+    }
+    androidx.compose.runtime.LaunchedEffect(rideId) { load() }
+    val r = ride
     Column(Modifier.fillMaxSize().background(c.surface)) {
         NovaTopBar(onBack = { nav.back() }, title = "Trip details", actions = {
-            IconButton(onClick = {}) { Icon(NovaIcons.Download, "Download invoice") }
+            if (r != null) IconButton(onClick = { shareReceipt(context, r) }) { Icon(NovaIcons.Share, "Share receipt") }
         })
+        if (r == null) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                if (error != null) Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(error!!, style = MaterialTheme.typography.bodyLarge, color = c.onSurfaceVariant)
+                    NovaOutlinedButton("Try again", onClick = { scope.launch { load() } })
+                } else androidx.compose.material3.LoadingIndicator()
+            }
+            return@Column
+        }
+        val whenIso = r.startedAt ?: r.requestedAt ?: r.createdAt
+        val total = com.nova.rider.data.trip.FareSummary.total(r)
+        val lines = com.nova.rider.data.trip.FareSummary.lines(r)
+        val explanation = com.nova.rider.data.trip.FareSummary.explanation(r)
+        val payment = paymentLabel(r.paymentMethod)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            MiniRouteMap()
+            RideRouteThumbnail(r)
             Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Bottom) {
                 Column(Modifier.weight(1f)) {
-                    Text("Sat 14 Nov · 10:14 AM · Comfort", fontSize = 14.sp, color = c.onSurfaceVariant)
-                    Text(Sample.fare, style = MaterialTheme.typography.displaySmall)
+                    Text("${RideTime.day(whenIso)} · ${RideTime.time(whenIso)} · ${r.productName}", fontSize = 14.sp, color = c.onSurfaceVariant)
+                    Text(TripFormat.money(total, r.currency), style = MaterialTheme.typography.displaySmall)
                 }
                 Box(Modifier.padding(bottom = 8.dp).height(32.dp).clip(CircleShape).background(NovaPalette.Mint).padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
-                    Text("Paid · Google Pay", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = NovaPalette.OnMint)
+                    Text(if (total > 0) "Paid · $payment" else "Not charged", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = NovaPalette.OnMint)
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("${r.pickup.name} → ${r.dropoff.name}", Modifier.padding(horizontal = 4.dp), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            if (lines.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp, 20.dp, 4.dp, 4.dp)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    listOf("Base fare" to "$4.00", "Distance · ${Sample.distance}" to "$17.15", "Time · 27 min" to "$5.40", "Platform fee" to "$1.85").forEach { (k, v) ->
-                        Row { Text(k, Modifier.weight(1f), fontSize = 15.sp); Text(v, fontSize = 15.sp, fontWeight = FontWeight.Bold) }
+                    lines.forEach { line ->
+                        Row {
+                            Text(line.label, Modifier.weight(1f), fontSize = 15.sp, color = if (line.struck) c.onSurfaceVariant else c.onSurface)
+                            Text(
+                                line.amount, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                                color = if (line.struck) c.onSurfaceVariant else c.onSurface,
+                                textDecoration = if (line.struck) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
+                            )
+                        }
                     }
                 }
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp, 4.dp, 20.dp, 20.dp)).background(c.primaryContainer).padding(horizontal = 16.dp, vertical = 14.dp)) {
                     Text("Total", Modifier.weight(1f), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
-                    Text(Sample.fare, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
+                    Text(TripFormat.money(total, r.currency), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = c.onPrimaryContainer)
                 }
             }
-            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CookieAvatar(Sample.driverInitials, c.primaryContainer, c.onPrimaryContainer, size = 40.dp)
-                Column {
-                    Text(Sample.driverFullName, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                    Text("You rated ★ 5 · tipped $3", fontSize = 13.sp, color = c.onSurfaceVariant)
+            if (explanation != null) {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.tertiaryContainer).padding(horizontal = 16.dp, vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(NovaIcons.Info, null, tint = c.onTertiaryContainer)
+                    Text(explanation, fontSize = 14.sp, lineHeight = 20.sp, color = c.onTertiaryContainer)
+                }
+            }
+            r.driver?.let { d ->
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(c.surfaceContainer).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CookieAvatar(d.initials, c.primaryContainer, c.onPrimaryContainer, size = 40.dp)
+                    Column {
+                        Text(d.firstName, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text("${d.vehicle.label} · ${d.vehicle.plate}", fontSize = 13.sp, color = c.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -343,10 +383,49 @@ fun ReceiptScreen(nav: Navigator) {
     }
 }
 
+/** "gpay" / "card" / "credit" (server values) as the rider reads them. */
+fun paymentLabel(method: String): String = when (method) { "card" -> "Card"; "credit" -> "Nova Credit"; else -> "Google Pay" }
+
+/** The ride's real route on a small, non-interactive map (drawn thumbnail without a Maps key). */
+@Composable
+private fun RideRouteThumbnail(r: Ride) {
+    if (!com.nova.rider.BuildConfig.MAPS_ENABLED || r.polyline.isBlank()) { MiniRouteMap(); return }
+    val points = androidx.compose.runtime.remember(r.polyline) { com.nova.rider.feature.common.decodeRoute(r.polyline) }
+    val camera = com.google.maps.android.compose.rememberCameraPositionState {
+        position = com.google.android.gms.maps.model.CameraPosition.fromLatLngZoom(r.pickup.point.let { com.google.android.gms.maps.model.LatLng(it.lat, it.lng) }, 12f)
+    }
+    androidx.compose.runtime.LaunchedEffect(r.id) { kotlinx.coroutines.delay(300); camera.fitTo(points.ifEmpty { listOf(com.google.android.gms.maps.model.LatLng(r.pickup.lat, r.pickup.lng)) }, paddingPx = 60) }
+    Box(Modifier.fillMaxWidth().height(132.dp).clip(RoundedCornerShape(28.dp))) {
+        com.nova.rider.feature.common.NovaMap(cameraPositionState = camera, gesturesEnabled = false) {
+            com.nova.rider.feature.common.RouteLine(r.polyline)
+            com.nova.rider.feature.common.PickupMarker(r.pickup.point)
+            com.nova.rider.feature.common.DestinationMarker(r.dropoff.point)
+        }
+    }
+}
+
+/** Plain-text receipt through the system share sheet (email, files, messages). */
+private fun shareReceipt(context: android.content.Context, r: Ride) {
+    val total = TripFormat.money(com.nova.rider.data.trip.FareSummary.total(r), r.currency)
+    val text = buildString {
+        appendLine("Nova receipt · ${r.productName}")
+        appendLine("${RideTime.day(r.startedAt ?: r.createdAt)} ${RideTime.time(r.startedAt ?: r.createdAt)}")
+        appendLine("${r.pickup.name} → ${r.dropoff.name}")
+        com.nova.rider.data.trip.FareSummary.lines(r).forEach { appendLine("${it.label}: ${it.amount}") }
+        appendLine("Total: $total · ${paymentLabel(r.paymentMethod)}")
+        com.nova.rider.data.trip.FareSummary.explanation(r)?.let { appendLine(it) }
+    }
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+        .putExtra(android.content.Intent.EXTRA_SUBJECT, "Nova receipt").putExtra(android.content.Intent.EXTRA_TEXT, text)
+    context.startActivity(android.content.Intent.createChooser(send, "Share receipt"))
+}
+
 @Composable
 fun WalletScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var default by rememberSaveable { mutableIntStateOf(0) }
+    // The server's payment methods; the default is what the next booking is charged to.
+    val methodIds = listOf("gpay", "card", "credit")
+    val default = methodIds.indexOf(TripStore.paymentMethod).coerceAtLeast(0)
     var autoReload by rememberSaveable { mutableStateOf(false) }
     TabPage("Wallet", RiderTab.Wallet, nav::tab) {
         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(32.dp)).background(c.onSurface)) {
@@ -354,7 +433,7 @@ fun WalletScreen(nav: Navigator) {
             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column {
                     Text("Nova Credit", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.outlineVariant)
-                    Text("$42.00", style = MaterialTheme.typography.displayMedium, color = Color.White)
+                    Text(TripFormat.money(0, TripFormat.localCurrencyCode()), style = MaterialTheme.typography.displayMedium, color = Color.White)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     ConnectedButton("Add money", 0, 2, onClick = {}, container = NovaPalette.Volt, content = NovaPalette.OnVolt, height = 52.dp, icon = NovaIcons.Plus)
@@ -366,8 +445,8 @@ fun WalletScreen(nav: Navigator) {
         Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             val methods = listOf(
                 Triple("Google Pay", if (default == 0) "Default" else "Tap to make default", "GPay"),
-                Triple("Visa ···· 4417", "Expires 08/28", "card"),
-                Triple("Mastercard ···· 0932", if (default == 2) "Default" else null, "credit"),
+                Triple("Card", if (default == 1) "Default" else "Tap to make default", "card"),
+                Triple("Nova Credit", if (default == 2) "Default" else "Tap to make default", "credit"),
             )
             methods.forEachIndexed { i, (name, sub, badge) ->
                 val on = i == default
@@ -375,7 +454,7 @@ fun WalletScreen(nav: Navigator) {
                 val fg = if (on) c.onPrimaryContainer else c.onSurface
                 Row(
                     Modifier.fillMaxWidth().clip(shape).background(if (on) c.primaryContainer else c.surfaceContainer)
-                        .selectable(on, onClick = { default = i }, role = Role.RadioButton).padding(horizontal = 16.dp, vertical = 12.dp),
+                        .selectable(on, onClick = { TripStore.paymentMethod = methodIds[i] }, role = Role.RadioButton).padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     when (badge) {
@@ -398,10 +477,11 @@ fun WalletScreen(nav: Navigator) {
 @Composable
 fun AddCardScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
-    var number by rememberSaveable { mutableStateOf("4242 4242 4242 ") }
-    var expiry by rememberSaveable { mutableStateOf("08 / 28") }
+    var number by rememberSaveable { mutableStateOf("") }
+    var expiry by rememberSaveable { mutableStateOf("") }
     var cvc by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf("Akash K") }
+    val me = com.nova.rider.data.auth.AuthStore.session?.user
+    var name by rememberSaveable { mutableStateOf(listOfNotNull(me?.firstName, me?.lastName).joinToString(" ").trim()) }
     var makeDefault by rememberSaveable { mutableStateOf(true) }
     val digits = number.filter(Char::isDigit)
     val preview = (digits + "•".repeat((16 - digits.length).coerceAtLeast(0))).take(16).chunked(4).joinToString(" ").replace('•', '·')

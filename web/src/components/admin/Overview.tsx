@@ -2,7 +2,7 @@ import type { AdminDriver, AdminMediaItem, AdminOverview, AdminRide, AuditEntry 
 import { ago, change, count, fullName, money } from '../../lib/format'
 import { readyForReview, splitVehicle } from './DriversPage'
 import { TripsChart } from './TripsChart'
-import { Avatar, Button, EmptyState, Panel, Plate, StatusTag, Tag, isLiveTrip } from './ui'
+import { Avatar, Button, EmptyState, Panel, Plate, StatCard, StatusTag, Tag, isLiveTrip } from './ui'
 import { initials } from '../../lib/format'
 
 export function Overview({
@@ -26,7 +26,7 @@ export function Overview({
 }) {
   const days = overview?.daily_rides ?? []
   const thisWeek = days.slice(-7)
-  const lastWeek = days.length > 7 ? days.slice(0, days.length - 7) : []
+  const lastWeek = days.slice(-14, -7)
   const sum = (pts: typeof days, k: 'completed' | 'fare_cents') => pts.reduce((a, p) => a + p[k], 0)
   const currency = rides[0]?.currency ?? 'NZD'
   const tripsDelta = change(sum(thisWeek, 'completed'), sum(lastWeek, 'completed'), 'the 7 days before')
@@ -41,14 +41,32 @@ export function Overview({
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat
+        <StatCard
           label="Drivers online now"
           value={count(overview?.online_drivers ?? 0)}
-          foot={<Tag tone={(overview?.online_drivers ?? 0) > 0 ? 'live' : 'neutral'}>{count(overview?.approved_drivers ?? 0)} approved in total</Tag>}
+          headline={<Tag tone={(overview?.online_drivers ?? 0) > 0 ? 'live' : 'neutral'}>{(overview?.online_drivers ?? 0) > 0 ? 'Taking trips now' : 'Nobody online'}</Tag>}
+          sub={`${count(overview?.approved_drivers ?? 0)} approved drivers in total`}
         />
-        <Stat label="Trips under way" value={count(overview?.active_rides ?? 0)} foot={<span className="text-fg-2">{count(overview?.scheduled_rides ?? 0)} scheduled for later</span>} />
-        <Stat label="Completed trips, last 7 days" value={count(sum(thisWeek, 'completed'))} foot={<Delta {...tripsDelta} />} />
-        <Stat label="Fares, last 7 days" value={money(sum(thisWeek, 'fare_cents'), currency)} foot={<Delta {...faresDelta} />} />
+        <StatCard
+          label="Trips under way"
+          value={count(overview?.active_rides ?? 0)}
+          headline={`${count(overview?.scheduled_rides ?? 0)} scheduled for later`}
+          sub={`${count(overview?.completed_rides ?? 0)} completed all time`}
+        />
+        <StatCard
+          label="Completed trips, last 7 days"
+          value={count(sum(thisWeek, 'completed'))}
+          change={tripsDelta}
+          headline={<Delta {...tripsDelta} />}
+          sub={`${count(sum(lastWeek, 'completed'))} the 7 days before`}
+        />
+        <StatCard
+          label="Fares, last 7 days"
+          value={money(sum(thisWeek, 'fare_cents'), currency)}
+          change={faresDelta}
+          headline={<Delta {...faresDelta} />}
+          sub={`${money(sum(lastWeek, 'fare_cents'), currency)} the 7 days before`}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -161,16 +179,6 @@ export function Overview({
           )}
         </Panel>
       </div>
-    </div>
-  )
-}
-
-function Stat({ label, value, foot }: { label: string; value: string; foot: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-line bg-surface p-5">
-      <p className="text-[13px] text-fg-2">{label}</p>
-      <p className="mt-2 font-mono text-[28px] leading-9 font-medium text-fg tabular-nums">{value}</p>
-      <div className="mt-2 text-[13px]">{foot}</div>
     </div>
   )
 }

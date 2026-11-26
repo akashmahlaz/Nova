@@ -27,6 +27,7 @@ fun authErrorMessage(error: Throwable): String {
         "passkey_verification_failed" -> "Couldn't verify your passkey. Try again."
         "passkey_already_registered" -> "This passkey is already on your account."
         "passkey_options_failed" -> "Couldn't start the passkey flow. Try again."
+        "account_deactivated" -> "This account has been closed. Contact support."
         "unauthorized" -> "You need to be signed in for that."
         "network_error" -> "No connection. Check your internet and try again."
         else -> "Something went wrong. Try again."

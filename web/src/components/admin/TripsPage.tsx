@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { type AdminRide, type AdminRideDetail, novaAdminApi } from '../../lib/api'
 import { formatError } from '../../lib/errors'
 import { ago, count, dateTime, km, minutes, money, paymentName, productName, time } from '../../lib/format'
-import { EmptyState, PageHeader, Panel, Plate, ROW, SearchInput, Segmented, SidePanel, StatusTag, TABLE, TD, TH, isLiveTrip, rowProps } from './ui'
+import { DataTable, PageHeader, Plate, Segmented, SidePanel, StatusTag, isLiveTrip } from './ui'
 import { splitVehicle } from './DriversPage'
 
 type Filter = 'all' | 'live' | 'scheduled' | 'completed' | 'cancelled'
@@ -35,9 +35,10 @@ export function TripsPage({ rides, onOpenChange }: { rides: AdminRide[]; onOpenC
   return (
     <div className="space-y-6">
       <PageHeader title="Trips" meta={`${count(counts.live)} live now · ${count(counts.scheduled)} scheduled · last ${count(rides.length)} trips`} />
-      <Panel
-        bodyClassName=""
-        title={
+      <DataTable
+        id="trips"
+        label="Trips"
+        tabs={
           <Segmented
             label="Trip filter"
             value={filter}
@@ -51,48 +52,39 @@ export function TripsPage({ rides, onOpenChange }: { rides: AdminRide[]; onOpenC
             ]}
           />
         }
-        action={<SearchInput label="Search trips" value={query} onChange={setQuery} placeholder="Rider, driver, place" />}
-      >
-        {rows.length === 0 ? (
-          <EmptyState title="No trips match" body={filter === 'live' ? 'Trips appear here the moment a rider books.' : 'Try another filter or search.'} />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th className={TH}>Route</th>
-                  <th className={TH}>Rider</th>
-                  <th className={TH}>Driver</th>
-                  <th className={TH}>Booked</th>
-                  <th className={`${TH} text-right`}>Fare</th>
-                  <th className={TH}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.id} className={ROW} {...rowProps(() => onOpenChange(r.id), `Trip from ${r.pickup_name} to ${r.dropoff_name}`)}>
-                    <td className={`${TD} max-w-[340px]`}>
-                      <div className="truncate font-medium text-fg">
-                        {r.pickup_name} <span className="text-fg-3">→</span> {r.dropoff_name}
-                      </div>
-                      <div className="text-xs text-fg-3">
-                        {productName(r.product_id)} · {km(r.distance_meters)} · {r.service_area_name}
-                      </div>
-                    </td>
-                    <td className={`${TD} text-fg-2`}>{r.rider_name}</td>
-                    <td className={`${TD} text-fg-2`}>{r.driver_name ?? <span className="text-fg-3">Not assigned</span>}</td>
-                    <td className={`${TD} whitespace-nowrap text-fg-2`}>{ago(r.created_at)}</td>
-                    <td className={`${TD} text-right font-mono whitespace-nowrap text-fg tabular-nums`}>{money(r.fare_cents, r.currency)}</td>
-                    <td className={TD}>
-                      <StatusTag status={r.status} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+        search={{ value: query, onChange: setQuery, placeholder: 'Rider, driver, place' }}
+        rows={rows}
+        rowKey={(r) => r.id}
+        onRowClick={(r) => onOpenChange(r.id)}
+        rowLabel={(r) => `Trip from ${r.pickup_name} to ${r.dropoff_name}`}
+        empty={{ title: 'No trips match', body: filter === 'live' ? 'Trips appear here the moment a rider books.' : 'Try another filter or search.' }}
+        summary={`${count(rows.length)} ${rows.length === 1 ? 'trip' : 'trips'} shown`}
+        columns={[
+          {
+            id: 'route',
+            header: 'Route',
+            hideable: false,
+            className: 'max-w-[340px]',
+            cell: (r) => (
+              <>
+                <div className="truncate font-medium text-fg">
+                  {r.pickup_name} <span className="text-fg-3">→</span> {r.dropoff_name}
+                </div>
+                <div className="text-xs text-fg-3">
+                  {productName(r.product_id)} · {km(r.distance_meters)} · {r.service_area_name}
+                </div>
+              </>
+            ),
+          },
+          { id: 'rider', header: 'Rider', className: 'text-fg-2', cell: (r) => r.rider_name },
+          { id: 'driver', header: 'Driver', className: 'text-fg-2', cell: (r) => r.driver_name ?? <span className="text-fg-3">Not assigned</span> },
+          { id: 'payment', header: 'Payment', defaultHidden: true, className: 'text-fg-2', cell: (r) => paymentName(r.payment_method) },
+          { id: 'time', header: 'Time', defaultHidden: true, className: 'whitespace-nowrap text-fg-2', cell: (r) => minutes(r.duration_seconds) },
+          { id: 'booked', header: 'Booked', className: 'whitespace-nowrap text-fg-2', cell: (r) => ago(r.created_at) },
+          { id: 'fare', header: 'Fare', align: 'right', className: 'font-mono whitespace-nowrap text-fg tabular-nums', cell: (r) => money(r.fare_cents, r.currency) },
+          { id: 'status', header: 'Status', cell: (r) => <StatusTag status={r.status} /> },
+        ]}
+      />
     </div>
   )
 }
@@ -138,10 +130,12 @@ export function TripDetail({ rideId, onClose }: { rideId: string | null; onClose
       {ride && (
         <div className="space-y-8">
           <div className="grid grid-cols-3 gap-4 rounded-xl border border-line p-5">
-            <Figure label="Fare" value={money(ride.fare_cents, ride.currency)} />
-            <Figure label="Distance" value={km(ride.distance_meters)} />
-            <Figure label="Estimated time" value={minutes(ride.duration_seconds)} />
+            <Figure label={ride.status === 'completed' ? 'Rider paid' : 'Upfront price'} value={money(ride.fare_cents, ride.currency)} />
+            <Figure label="Distance" value={km(ride.actual_distance_meters ?? ride.distance_meters)} />
+            <Figure label={ride.actual_duration_seconds != null ? 'Trip time' : 'Estimated time'} value={minutes(ride.actual_duration_seconds ?? ride.duration_seconds)} />
           </div>
+
+          <FareBreakdown ride={ride} />
 
           <section className="space-y-3" aria-labelledby="trip-timeline">
             <h3 id="trip-timeline" className="text-sm font-medium text-fg">
@@ -201,6 +195,51 @@ export function TripDetail({ rideId, onClose }: { rideId: string | null; onClose
         </div>
       )}
     </SidePanel>
+  )
+}
+
+const REASONS: Record<string, string> = {
+  ended_away: 'Ended away from the destination, so the fare is for the distance and time travelled',
+  longer_trip: 'Took much longer than the route, so the fare is for the actual distance and time',
+}
+
+/** Where the money went: what the rider was shown, what they paid, and the driver's share. */
+function FareBreakdown({ ride }: { ride: AdminRideDetail }) {
+  const m = (c: number) => money(c, ride.currency)
+  const settled = ride.driver_earnings_cents != null
+  const rows: [string, string, string?][] = []
+  if (ride.upfront_fare_cents != null) rows.push(['Upfront price', m(ride.upfront_fare_cents)])
+  if (ride.fare_basis === 'actual') rows.push(['Repriced on actual trip', m(ride.fare_cents - ride.wait_fee_cents), ride.fare_change_reason ? REASONS[ride.fare_change_reason] : undefined])
+  if (ride.wait_fee_cents > 0) rows.push(['Wait time', m(ride.wait_fee_cents), ride.wait_seconds != null ? `${minutes(ride.wait_seconds)} at the pickup` : undefined])
+  if (ride.cancel_fee_cents > 0) rows.push([ride.cancel_reason === 'rider_no_show' ? 'No-show fee' : 'Cancellation fee', m(ride.cancel_fee_cents)])
+  if (ride.booking_fee_cents != null && ride.status === 'completed') rows.push(['Booking fee, to Nova', m(ride.booking_fee_cents)])
+  if (ride.service_fee_cents != null) rows.push(['Service fee, to Nova', m(ride.service_fee_cents)])
+  if (ride.long_pickup_cents > 0) rows.push(['Long pickup, paid by Nova', m(ride.long_pickup_cents)])
+  if (settled) rows.push(['Driver earned', m(ride.driver_earnings_cents!)])
+  const checks = [
+    ride.arrived_distance_m != null && `Arrived ${ride.arrived_distance_m} m from the pickup`,
+    ride.dropoff_distance_m != null && `Ended ${ride.dropoff_distance_m < 1000 ? `${ride.dropoff_distance_m} m` : km(ride.dropoff_distance_m)} from the destination`,
+    ride.trail_points > 0 && `${count(ride.trail_points)} GPS points recorded`,
+  ].filter(Boolean) as string[]
+  if (rows.length <= 1 && checks.length === 0) return null
+  return (
+    <section className="space-y-3" aria-labelledby="trip-money">
+      <h3 id="trip-money" className="text-sm font-medium text-fg">
+        Money
+      </h3>
+      <dl className="divide-y divide-line rounded-xl border border-line">
+        {rows.map(([label, value, note]) => (
+          <div key={label} className="flex items-start justify-between gap-4 px-5 py-3">
+            <dt className="text-sm text-fg-2">
+              {label}
+              {note && <span className="mt-0.5 block text-xs text-fg-3">{note}</span>}
+            </dt>
+            <dd className="font-mono text-sm text-fg tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {checks.length > 0 && <p className="text-xs text-fg-3">{checks.join(' · ')}</p>}
+    </section>
   )
 }
 

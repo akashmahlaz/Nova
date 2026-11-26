@@ -2,10 +2,12 @@ mod account;
 mod admin;
 mod contacts;
 mod auth;
+mod chat;
 mod config;
 mod dispatch;
 mod drivers;
 mod error;
+mod fare;
 mod geo;
 mod hub;
 mod media;
@@ -111,6 +113,7 @@ async fn main() {
     }
     // Resumes open requests after a restart and moves due scheduled rides into dispatch.
     dispatch::spawn_background(state.clone());
+    geo::pricing::spawn_surge_job(state.clone());
 
     let app = Router::new()
         .route("/", get(|| async {
@@ -183,6 +186,7 @@ async fn main() {
         .merge(contacts::router())
         .merge(drivers::router())
         .merge(hub::router())
+        .merge(chat::router())
         .merge(media::router())
         .merge(admin::router())
         .layer(PropagateRequestIdLayer::x_request_id())

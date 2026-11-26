@@ -13,7 +13,7 @@ use redis::AsyncCommands;
 use serde::Serialize;
 use sqlx::FromRow;
 
-use crate::error::ApiError;
+use crate::{error::ApiError, AppState};
 
 /// Res 8 cells are ~0.7 km² (edge ~460 m): roughly a few city blocks. This is the granularity
 /// commonly used for marketplace supply/demand.
@@ -22,8 +22,28 @@ pub const SURGE_RESOLUTION: Resolution = Resolution::Eight;
 /// Surge can never multiply a fare by more than this. A cap protects riders and the brand.
 const MAX_SURGE: f64 = 3.0;
 
-/// Demand counters live this long; a future pricing job reads the recent buckets.
+/// Demand counters live this long; the surge job reads the recent buckets.
 const DEMAND_TTL_SECS: i64 = 15 * 60;
+
+/// Surge looks at requests in the last few minutes against drivers free right now.
+const SURGE_WINDOW_MINUTES: i64 = 5;
+/// How often surge is recomputed (Uber recomputes every minute or so).
+const SURGE_EVERY_SECS: u64 = 60;
+/// Surge curve: multiplier = 1 + SURGE_SLOPE * ln(requests / free drivers). Twice the demand
+/// gives about 1.35x, four times about 1.7x. Logarithmic, so it rises fast at first and then
+/// flattens instead of running away.
+const SURGE_SLOPE: f64 = 0.5;
+/// When demand eases, surge falls by this much per minute rather than dropping at once, so a
+/// rider who just saw 1.8x doesn't see 1.0x a second later and feel tricked.
+const SURGE_STEP_DOWN: f64 = 0.1;
+/// Supply is counted within this radius of the cell centre: the cell plus its ring of neighbours.
+const SUPPLY_RADIUS_KM: f64 = 1.2;
+/// A surge value expires on its own if the job stops.
+const SURGE_TTL_SECS: u64 = 3 * 60;
+
+fn demand_cells_key(minute: i64) -> String {
+    format!("nova:demand:cells:{minute}")
+}
 
 #[derive(Debug, Clone, FromRow)]
 pub struct FareRate {
@@ -89,11 +109,88 @@ pub async fn surge_multiplier(redis: &mut redis::aio::ConnectionManager, cell: C
 pub async fn record_demand(redis: &mut redis::aio::ConnectionManager, cell: CellIndex) -> Result<(), ApiError> {
     let minute = chrono::Utc::now().timestamp() / 60;
     let key = format!("nova:demand:{cell}:{minute}");
+    let cells = demand_cells_key(minute);
     let _: () = redis::pipe()
         .incr(&key, 1)
         .expire(&key, DEMAND_TTL_SECS)
+        .sadd(&cells, cell.to_string())
+        .expire(&cells, DEMAND_TTL_SECS)
         .query_async(redis)
         .await?;
+    Ok(())
+}
+
+/// Target multiplier for `requests` against `free_drivers`, before the area cap.
+pub fn surge_target(requests: i64, free_drivers: i64) -> f64 {
+    let ratio = requests as f64 / free_drivers.max(1) as f64;
+    if ratio <= 1.0 {
+        return 1.0;
+    }
+    ((1.0 + SURGE_SLOPE * ratio.ln()) * 10.0).round() / 10.0
+}
+
+/// Next multiplier: rise straight to the target, ease down by [SURGE_STEP_DOWN] a minute.
+pub fn surge_next(previous: f64, target: f64, cap: f64) -> f64 {
+    let next = if target >= previous { target } else { (previous - SURGE_STEP_DOWN).max(target) };
+    (next.clamp(1.0, cap.clamp(1.0, MAX_SURGE)) * 10.0).round() / 10.0
+}
+
+/// Every minute, for each hexagon that had requests recently: count requests in it and its
+/// neighbours over the window, count free online drivers around it, and write the multiplier
+/// that quotes read. Capped by the service area's `max_surge` (2x in India by law).
+pub fn spawn_surge_job(st: AppState) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(SURGE_EVERY_SECS));
+        loop {
+            tick.tick().await;
+            if let Err(err) = update_surge(&st).await {
+                tracing::warn!(error = ?err, "surge update failed");
+            }
+        }
+    });
+}
+
+async fn update_surge(st: &AppState) -> Result<(), ApiError> {
+    let mut redis = st.redis.clone();
+    let now = chrono::Utc::now().timestamp() / 60;
+    let minutes: Vec<i64> = (0..SURGE_WINDOW_MINUTES).map(|m| now - m).collect();
+    let set_keys: Vec<String> = minutes.iter().map(|m| demand_cells_key(*m)).collect();
+    let active: Vec<String> = redis.sunion(&set_keys).await?;
+    for raw in active {
+        let Ok(cell) = raw.parse::<CellIndex>() else { continue };
+        let ring: Vec<CellIndex> = cell.grid_disk(1);
+        let keys: Vec<String> = ring
+            .iter()
+            .flat_map(|c| minutes.iter().map(move |m| format!("nova:demand:{c}:{m}")))
+            .collect();
+        let counts: Vec<Option<i64>> = redis::cmd("MGET").arg(&keys).query_async(&mut redis).await?;
+        let requests: i64 = counts.into_iter().flatten().sum();
+
+        let centre = LatLng::from(cell);
+        let nearby: Vec<String> = redis::cmd("GEOSEARCH")
+            .arg(crate::drivers::ONLINE_KEY)
+            .arg("FROMLONLAT").arg(centre.lng()).arg(centre.lat())
+            .arg("BYRADIUS").arg(SUPPLY_RADIUS_KM).arg("km")
+            .query_async(&mut redis)
+            .await?;
+        let free = crate::drivers::count_free(st, &nearby).await?;
+
+        let cap = match super::area_at(st, super::LatLng { lat: centre.lat(), lng: centre.lng() }).await? {
+            Some(area) => area.max_surge,
+            None => continue,
+        };
+        let key = format!("nova:surge:{cell}");
+        let previous = surge_multiplier(&mut redis, cell).await?;
+        let next = surge_next(previous, surge_target(requests, free), cap);
+        if next > 1.0 {
+            let _: () = redis.set_ex(&key, next.to_string(), SURGE_TTL_SECS).await?;
+        } else {
+            let _: () = redis.del(&key).await?;
+        }
+        if (next - previous).abs() >= 0.05 {
+            tracing::info!(%cell, requests, free, surge = next, "surge changed");
+        }
+    }
     Ok(())
 }
 
@@ -133,6 +230,18 @@ mod tests {
         assert_eq!(fare_cents(&rate(), 9_800, 18 * 60, 1.5), 4340);
         // A runaway multiplier is capped at 3x.
         assert_eq!(fare_cents(&rate(), 9_800, 18 * 60, 10.0), fare_cents(&rate(), 9_800, 18 * 60, 3.0));
+    }
+
+    #[test]
+    fn surge_follows_demand_and_eases_down() {
+        assert_eq!(surge_target(3, 5), 1.0);
+        assert_eq!(surge_target(10, 5), 1.3);
+        assert_eq!(surge_target(20, 5), 1.7);
+        // Rises at once, capped by the area (2x in India).
+        assert_eq!(surge_next(1.0, 2.6, 2.0), 2.0);
+        // Falls one step a minute.
+        assert_eq!(surge_next(1.8, 1.0, 2.0), 1.7);
+        assert_eq!(surge_next(1.05, 1.0, 2.0), 1.0);
     }
 
     #[test]

@@ -1,6 +1,24 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, Car, FolderLock, LayoutDashboard, LogOut, MapPinned, Menu, Navigation, RefreshCw, Search, Users } from 'lucide-react'
+import {
+  Activity,
+  Car,
+  ChevronRight,
+  ChevronsUpDown,
+  CircleUser,
+  FolderLock,
+  LayoutDashboard,
+  LogOut,
+  MapPinned,
+  Menu as MenuIcon,
+  Navigation,
+  PanelLeft,
+  RefreshCw,
+  Search,
+  Users,
+} from 'lucide-react'
+import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem, MenuSeparator, MenuTrigger } from '@ui-sdk/react/menu'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@ui-sdk/react/tooltip'
 import {
   type AdminDriver,
   type AdminMediaItem,
@@ -17,7 +35,7 @@ import {
 } from '../lib/api'
 import { formatError } from '../lib/errors'
 import { ago, count, fullName, initials, longDay } from '../lib/format'
-import { Avatar, Button, Field, IconButton, Kbd, PageHeader, Segmented, SidePanel, TextInput, ThemeSwitch, Toasts } from '../components/admin/ui'
+import { Avatar, Button, Field, IconButton, Kbd, MENU, MENU_ITEM, MENU_LABEL, MENU_SEPARATOR, PageHeader, Segmented, SidePanel, TIP, TextInput, ThemeSwitch, Toasts } from '../components/admin/ui'
 import { Overview } from '../components/admin/Overview'
 import { DriverReview, DriversPage } from '../components/admin/DriversPage'
 import { TripDetail, TripsPage } from '../components/admin/TripsPage'
@@ -224,6 +242,14 @@ type NavItem = { id: Page; label: string; icon: React.ReactNode; count?: number 
 function Console({ session, onLogout, onSignedOut }: { session: Session; onLogout: () => Promise<void>; onSignedOut: () => void }) {
   const [page, setPage] = useState<Page>('overview')
   const [navOpen, setNavOpen] = useState(false)
+  // Desktop sidebar collapses to icons, like sidebar-07. Remembered across visits; ⌘B toggles.
+  const [collapsed, setCollapsed] = useState(false)
+  const toggleSidebar = useCallback(() => {
+    setCollapsed((c) => {
+      window.localStorage.setItem('nova_sidebar_collapsed', c ? '0' : '1')
+      return !c
+    })
+  }, [])
   const [searchOpen, setSearchOpen] = useState(false)
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [users, setUsers] = useState<AdminUser[]>([])
@@ -246,7 +272,8 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
     setLoading(true)
     try {
       const [ov, us, dr, rd, ar, md, au] = await Promise.all([
-        novaAdminApi.getOverview(),
+        // 180 days covers the chart's longest range (90 days) and the 90 before it.
+        novaAdminApi.getOverview(180),
         novaAdminApi.listUsers(),
         novaAdminApi.listDrivers(),
         novaAdminApi.listRides(),
@@ -276,6 +303,7 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
   useEffect(() => {
     const fromHash = window.location.hash.slice(1) as Page
     if (PAGES.includes(fromHash)) setPage(fromHash)
+    setCollapsed(window.localStorage.getItem('nova_sidebar_collapsed') === '1')
     void load()
     // Live numbers stay fresh while the console is open and visible.
     const poll = window.setInterval(() => document.visibilityState === 'visible' && void load(), 30_000)
@@ -285,6 +313,10 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
         e.preventDefault()
         setSearchOpen((v) => !v)
       }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        toggleSidebar()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => {
@@ -292,7 +324,7 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
       window.clearInterval(clock)
       window.removeEventListener('keydown', onKey)
     }
-  }, [load])
+  }, [load, toggleSidebar])
 
   const go = (p: Page) => {
     setPage(p)
@@ -321,30 +353,81 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
     { label: 'Oversight', items: [{ id: 'activity', label: 'Activity', icon: <Activity className="size-4" /> }] },
   ]
 
-  const sidebar = (
-    <div className="flex h-full flex-col px-3 pt-4 pb-3">
-      <div className="px-2 pb-6">
-        <Wordmark />
-      </div>
-      <nav aria-label="Console" className="flex-1 space-y-6">
+  const openAreas = areas.filter((a) => a.active).length
+  const contact = session.user.email ?? session.user.phone_e164 ?? ''
+
+  /** sidebar-07 shape: switcher on top, grouped nav, user menu at the bottom. `mini` is the icon rail. */
+  const sidebar = (mini: boolean) => (
+    <div className={`flex h-full flex-col pt-3 pb-3 ${mini ? 'items-center px-2' : 'px-3'}`}>
+      <Menu>
+        <MenuTrigger
+          aria-label="Nova Ops, service areas"
+          className={`flex cursor-pointer items-center gap-2.5 rounded-[10px] text-left outline-none transition-colors hover:bg-surface/60 data-open:bg-surface data-open:ring-1 data-open:ring-line ${mini ? 'size-10 justify-center' : 'h-12 w-full px-2'}`}
+        >
+          <span aria-hidden="true" className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-volt text-[13px] font-semibold text-on-volt">
+            N
+          </span>
+          {!mini && (
+            <>
+              <span className="min-w-0 flex-1 leading-tight">
+                <span className="block truncate text-sm font-medium text-fg">Nova Ops</span>
+                <span className="block truncate text-xs text-fg-3">
+                  {count(openAreas)} of {count(areas.length)} areas open
+                </span>
+              </span>
+              <ChevronsUpDown aria-hidden="true" className="size-4 text-fg-3" />
+            </>
+          )}
+        </MenuTrigger>
+        <MenuContent side={mini ? 'right' : 'bottom'} align="start" sideOffset={6} className={MENU}>
+          <MenuGroup>
+            <MenuGroupLabel className={MENU_LABEL}>Service areas</MenuGroupLabel>
+            {areas.map((a) => (
+              <MenuItem key={a.id} value={a.id} className={MENU_ITEM} onSelect={() => go('areas')}>
+                <MapPinned aria-hidden="true" />
+                <span className="flex-1 truncate">{a.name}</span>
+                <span className={`text-xs ${a.active ? 'text-good' : 'text-fg-3'}`}>{a.active ? 'Open' : 'Paused'}</span>
+              </MenuItem>
+            ))}
+            {areas.length === 0 && <p className="px-2 py-1.5 text-sm text-fg-3">No service areas yet</p>}
+          </MenuGroup>
+          <div role="separator" className={MENU_SEPARATOR} />
+          <MenuItem value="manage-areas" className={MENU_ITEM} onSelect={() => go('areas')}>
+            <ChevronRight aria-hidden="true" />
+            Manage areas and prices
+          </MenuItem>
+        </MenuContent>
+      </Menu>
+
+      <nav aria-label="Console" className={`mt-5 flex-1 space-y-5 ${mini ? 'w-full' : ''}`}>
         {groups.map((g) => (
           <div key={g.label}>
-            <p className="px-2 pb-2 text-xs text-fg-3">{g.label}</p>
-            <ul className="space-y-0.5">
+            {mini ? <div aria-hidden="true" className="mx-auto mb-2 h-px w-6 bg-line first:hidden" /> : <p className="px-2 pb-2 text-xs text-fg-3">{g.label}</p>}
+            <ul className={`space-y-0.5 ${mini ? 'flex flex-col items-center' : ''}`}>
               {g.items.map((item) => {
                 const active = page === item.id
+                const look = `flex h-9 cursor-pointer items-center gap-2.5 rounded-[10px] text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-fg ${active ? 'bg-surface font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.05)] ring-1 ring-line' : 'text-fg-2 hover:bg-surface/60 hover:text-fg'}`
+                const badge = item.count !== undefined && item.count > 0 ? item.count : null
                 return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      onClick={() => go(item.id)}
-                      aria-current={active ? 'page' : undefined}
-                      className={`flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2 text-sm transition-colors ${active ? 'bg-surface font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.05)] ring-1 ring-line' : 'text-fg-2 hover:bg-surface/60 hover:text-fg'}`}
-                    >
-                      <span className={active ? 'text-fg' : 'text-fg-3'}>{item.icon}</span>
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {item.count !== undefined && item.count > 0 && <span className="font-mono text-xs text-fg-3">{count(item.count)}</span>}
-                    </button>
+                  <li key={item.id} className={mini ? '' : 'w-full'}>
+                    {mini ? (
+                      <Tooltip>
+                        <TooltipTrigger aria-label={item.label} onClick={() => go(item.id)} aria-current={active ? 'page' : undefined} className={`${look} relative size-9 justify-center`}>
+                          <span className={active ? 'text-fg' : 'text-fg-3'}>{item.icon}</span>
+                          {badge !== null && <span aria-hidden="true" className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-volt ring-2 ring-canvas" />}
+                        </TooltipTrigger>
+                        <TooltipContent side="right" sideOffset={8} className={TIP}>
+                          {item.label}
+                          {badge !== null && ` · ${count(badge)}`}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <button type="button" onClick={() => go(item.id)} aria-current={active ? 'page' : undefined} className={`${look} w-full px-2`}>
+                        <span className={active ? 'text-fg' : 'text-fg-3'}>{item.icon}</span>
+                        <span className="flex-1 text-left">{item.label}</span>
+                        {badge !== null && <span className="font-mono text-xs text-fg-3">{count(badge)}</span>}
+                      </button>
+                    )}
                   </li>
                 )
               })}
@@ -352,45 +435,112 @@ function Console({ session, onLogout, onSignedOut }: { session: Session; onLogou
           </div>
         ))}
       </nav>
-      <div className="flex items-center gap-3 rounded-xl px-2 py-2">
-        <Avatar text={initials(session.user)} size="sm" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-fg">{fullName(session.user)}</p>
-          <p className="truncate text-xs text-fg-3">{session.user.email ?? session.user.phone_e164}</p>
-        </div>
-        <IconButton label="Sign out" onClick={() => void onLogout()}>
-          <LogOut className="size-4" />
-        </IconButton>
-      </div>
+
+      <Menu>
+        <MenuTrigger
+          aria-label={`${fullName(session.user)}, account menu`}
+          className={`flex cursor-pointer items-center gap-2.5 rounded-[10px] text-left outline-none transition-colors hover:bg-surface/60 data-open:bg-surface data-open:ring-1 data-open:ring-line ${mini ? 'size-10 justify-center' : 'h-12 w-full px-2'}`}
+        >
+          <Avatar text={initials(session.user)} size="md" />
+          {!mini && (
+            <>
+              <span className="min-w-0 flex-1 leading-tight">
+                <span className="block truncate text-sm font-medium text-fg">{fullName(session.user)}</span>
+                <span className="block truncate text-xs text-fg-3">{contact}</span>
+              </span>
+              <ChevronsUpDown aria-hidden="true" className="size-4 text-fg-3" />
+            </>
+          )}
+        </MenuTrigger>
+        <MenuContent side={mini ? 'right' : 'top'} align="end" sideOffset={6} className={MENU}>
+          <div className="flex items-center gap-2.5 px-2 py-2">
+            <Avatar text={initials(session.user)} size="md" />
+            <span className="min-w-0 leading-tight">
+              <span className="block truncate text-sm font-medium text-fg">{fullName(session.user)}</span>
+              <span className="block truncate text-xs text-fg-3">{contact}</span>
+            </span>
+          </div>
+          <div role="separator" className={MENU_SEPARATOR} />
+          <MenuItem
+            value="account"
+            className={MENU_ITEM}
+            onSelect={() => {
+              go('accounts')
+              setOpenAccount(session.user.id)
+            }}
+          >
+            <CircleUser aria-hidden="true" />
+            Your account
+          </MenuItem>
+          <MenuSeparator className={MENU_SEPARATOR} />
+          <MenuItem value="sign-out" className={MENU_ITEM} onSelect={() => onLogout()}>
+            <LogOut aria-hidden="true" />
+            Sign out
+          </MenuItem>
+        </MenuContent>
+      </Menu>
     </div>
   )
 
-  const currentLabel = groups.flatMap((g) => g.items).find((i) => i.id === page)?.label ?? ''
+  const currentGroup = groups.find((g) => g.items.some((i) => i.id === page))
+  const currentLabel = currentGroup?.items.find((i) => i.id === page)?.label ?? ''
 
   return (
     <div className="flex min-h-screen bg-canvas text-fg">
-      <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 lg:block">{sidebar}</aside>
+      <aside
+        aria-label="Sidebar"
+        data-collapsed={collapsed ? '' : undefined}
+        className={`sticky top-0 hidden h-screen shrink-0 transition-[width] duration-200 ease-out lg:block ${collapsed ? 'w-14' : 'w-[248px]'}`}
+      >
+        {sidebar(collapsed)}
+      </aside>
       <SidePanel open={navOpen} onOpenChange={setNavOpen} title="Menu" width="max-w-[280px]">
-        <div className="-mx-6 -my-5 h-full">{sidebar}</div>
+        <div className="-mx-6 -my-5 h-full">{sidebar(false)}</div>
       </SidePanel>
 
       <div className="flex min-w-0 flex-1 flex-col lg:py-2 lg:pr-2">
-        <div className="flex flex-1 flex-col bg-surface lg:rounded-2xl lg:ring-1 lg:ring-line">
-          <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line bg-surface/95 px-4 backdrop-blur-sm lg:rounded-t-2xl lg:px-8">
-            <IconButton label="Open menu" className="lg:hidden" onClick={() => setNavOpen(true)}>
-              <Menu className="size-4" />
+        <div className="flex flex-1 flex-col bg-surface lg:rounded-2xl lg:shadow-[0_1px_2px_rgb(0_0_0/0.04)] lg:ring-1 lg:ring-line">
+          <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-surface/95 px-4 backdrop-blur-sm lg:rounded-t-2xl lg:px-6">
+            <IconButton label="Open menu" className="-ml-1 lg:hidden" onClick={() => setNavOpen(true)}>
+              <MenuIcon className="size-4" />
             </IconButton>
-            <span className="text-sm font-medium text-fg lg:hidden">{currentLabel}</span>
+            <Tooltip>
+              <TooltipTrigger
+                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                onClick={toggleSidebar}
+                aria-expanded={!collapsed}
+                className="-ml-2 hidden size-9 cursor-pointer items-center justify-center rounded-[10px] text-fg-2 transition-colors hover:bg-sunken hover:text-fg lg:inline-flex"
+              >
+                <PanelLeft className="size-4" />
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6} className={TIP}>
+                {collapsed ? 'Expand sidebar' : 'Collapse sidebar'} · ⌘B
+              </TooltipContent>
+            </Tooltip>
+            <span aria-hidden="true" className="mx-1 h-4 w-px bg-line-strong" />
+            <nav aria-label="Breadcrumb" className="min-w-0">
+              <ol className="flex items-center gap-1.5 text-sm">
+                {currentGroup && (
+                  <li className="hidden items-center gap-1.5 text-fg-3 md:flex">
+                    {currentGroup.label}
+                    <ChevronRight aria-hidden="true" className="size-3.5" />
+                  </li>
+                )}
+                <li aria-current="page" className="truncate font-medium text-fg">
+                  {currentLabel}
+                </li>
+              </ol>
+            </nav>
             <button
               type="button"
               onClick={() => setSearchOpen(true)}
-              className="hidden h-9 w-80 cursor-pointer items-center gap-2 rounded-[10px] border border-line-strong bg-surface px-3 text-sm text-fg-3 transition-colors hover:border-fg-3 md:flex"
+              className="ml-auto hidden h-9 w-72 cursor-pointer items-center gap-2 rounded-[10px] border border-line-strong bg-surface px-3 text-sm text-fg-3 transition-colors hover:border-fg-3 md:flex"
             >
               <Search className="size-4" />
               <span className="flex-1 text-left">Search people, cars, trips</span>
               <Kbd>⌘K</Kbd>
             </button>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex items-center gap-2 md:ml-0">
               <IconButton label="Search" className="md:hidden" onClick={() => setSearchOpen(true)}>
                 <Search className="size-4" />
               </IconButton>

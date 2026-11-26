@@ -113,7 +113,6 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.rememberCameraPositionState
-import com.nova.rider.data.Sample
 import com.nova.rider.data.auth.NovaApi
 import com.nova.rider.data.auth.PlaceSuggestion
 import com.nova.rider.data.trip.TripFormat

@@ -108,6 +108,18 @@ pub struct Ride {
     ended_at: Option<DateTime<Utc>>,
     cancel_reason: Option<String>,
     created_at: DateTime<Utc>,
+    /// The price shown before booking. `fare_cents` is what the rider pays in the end.
+    upfront_fare_cents: Option<i64>,
+    /// "upfront", or "actual" when the trip changed and was repriced on actual time and distance.
+    fare_basis: String,
+    /// Why it was repriced: "ended_away" or "longer_trip".
+    fare_change_reason: Option<String>,
+    wait_fee_cents: i64,
+    cancel_fee_cents: i64,
+    /// While a driver is on the way: cancelling is free until this moment.
+    cancel_free_until: Option<DateTime<Utc>>,
+    /// The fee a cancellation after `cancel_free_until` costs (0 when none applies).
+    cancel_fee_preview_cents: i64,
 }
 
 #[derive(Serialize)]
@@ -175,6 +187,13 @@ struct RideRow {
     ended_at: Option<DateTime<Utc>>,
     cancel_reason: Option<String>,
     created_at: DateTime<Utc>,
+    upfront_fare_cents: Option<i64>,
+    fare_basis: String,
+    fare_change_reason: Option<String>,
+    wait_fee_cents: i64,
+    cancel_fee_cents: i64,
+    cancel_free_until: Option<DateTime<Utc>>,
+    cancel_fee_preview_cents: Option<i64>,
 }
 
 fn is_active(status: &str) -> bool {
@@ -223,6 +242,13 @@ impl RideRow {
             ended_at: self.ended_at,
             cancel_reason: self.cancel_reason,
             created_at: self.created_at,
+            upfront_fare_cents: self.upfront_fare_cents,
+            fare_basis: self.fare_basis,
+            fare_change_reason: self.fare_change_reason,
+            wait_fee_cents: self.wait_fee_cents,
+            cancel_fee_cents: self.cancel_fee_cents,
+            cancel_free_until: self.cancel_free_until,
+            cancel_fee_preview_cents: self.cancel_fee_preview_cents.unwrap_or(0),
         }
     }
 }
@@ -273,10 +299,19 @@ const RIDE_SELECT: &str = "SELECT r.id, r.share_token, r.status, r.product_id, p
         CASE WHEN du.phone_verified_at IS NOT NULL THEN du.phone_e164 END AS driver_phone,
         v.make AS vehicle_make, v.model AS vehicle_model, v.color AS vehicle_color, v.plate AS vehicle_plate,
         r.scheduled_at, r.requested_at, r.accepted_at, r.arrived_at, r.started_at,
-        r.ended_at, r.cancel_reason, r.created_at
+        r.ended_at, r.cancel_reason, r.created_at,
+        r.upfront_fare_cents, r.fare_basis, r.fare_change_reason, r.wait_fee_cents, r.cancel_fee_cents,
+        CASE WHEN r.status IN ('accepted', 'arriving') AND c.ride_id IS NOT NULL
+             THEN r.accepted_at + make_interval(secs => c.cancel_grace_secs) END AS cancel_free_until,
+        -- Same rule as fare::cancellation: the card fee, capped at the area's share of the fare.
+        CASE WHEN r.status IN ('accepted', 'arriving') AND c.ride_id IS NOT NULL
+             THEN (round(least(c.cancel_fee_cents::numeric,
+                               COALESCE(r.upfront_fare_cents, r.fare_cents) * c.cancel_fee_max_bps / 10000.0)
+                         / greatest(c.rounding_minor, 1)) * greatest(c.rounding_minor, 1))::bigint END AS cancel_fee_preview_cents
     FROM rides r JOIN ride_products p ON p.id = r.product_id
     LEFT JOIN users du ON du.id = r.driver_id
-    LEFT JOIN vehicles v ON v.id = r.vehicle_id";
+    LEFT JOIN vehicles v ON v.id = r.vehicle_id
+    LEFT JOIN ride_rate_cards c ON c.ride_id = r.id";
 
 async fn fetch_ride(st: &AppState, rider: Uuid, id: Uuid) -> Result<Option<Ride>, ApiError> {
     let row = sqlx::query_as::<_, RideRow>(&format!("{RIDE_SELECT} WHERE r.id = $1 AND r.rider_id = $2"))
@@ -412,12 +447,12 @@ async fn book(
             id, share_token, rider_id, quote_id, service_area_id, product_id, status,
             pickup_name, pickup_address, pickup_lat, pickup_lng, pickup,
             dropoff_name, dropoff_address, dropoff_lat, dropoff_lng,
-            currency, fare_cents, surge_multiplier, distance_meters, duration_seconds, polyline,
+            currency, fare_cents, upfront_fare_cents, surge_multiplier, distance_meters, duration_seconds, polyline,
             payment_method, passenger_name, passenger_phone, scheduled_at, requested_at, trip_pin)
          VALUES ($1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, ST_SetSRID(ST_MakePoint($11, $10), 4326)::geography,
             $12, $13, $14, $15,
-            $16, $17, $18, $19, $20, $21,
+            $16, $17, $17, $18, $19, $20, $21,
             $22, $23, $24, $25, CASE WHEN $7 = 'requested' THEN now() END, $26)",
     )
     .bind(id)
@@ -464,6 +499,8 @@ async fn book(
         }
         return Err(err.into());
     }
+    // The rate card this ride is settled on, fixed at booking.
+    crate::fare::snapshot(&mut *tx, id).await?;
     for (idx, stop) in stops.iter().enumerate() {
         sqlx::query(
             "INSERT INTO ride_stops (ride_id, stop_order, name, lat, lng) VALUES ($1, $2, $3, $4, $5)",
@@ -576,16 +613,22 @@ async fn cancel(
 ) -> Result<Json<Ride>, ApiError> {
     let rider = require_user_id(&st, &headers)?;
     let reason = body.and_then(|Json(b)| b.reason).map(|r| clean(&r, 200)).filter(|r| !r.is_empty());
+    let (fee, service, earned) = cancellation_fee(&st, rider, id).await?;
     // Only rides that haven't started can be cancelled by the rider; the WHERE makes it atomic.
     // The driver keeps their link to the ride (so it's in their history) but is free again.
     let updated: Option<Option<Uuid>> = sqlx::query_scalar(
-        "UPDATE rides SET status = 'cancelled', cancel_reason = $3, ended_at = now(), updated_at = now()
+        "UPDATE rides SET status = 'cancelled', cancel_reason = $3, ended_at = now(), updated_at = now(),
+                cancel_fee_cents = $4, service_fee_cents = CASE WHEN $4 > 0 THEN $5 END,
+                driver_earnings_cents = CASE WHEN $4 > 0 THEN $6 END
          WHERE id = $1 AND rider_id = $2 AND status IN ('scheduled', 'requested', 'accepted', 'arriving')
          RETURNING driver_id",
     )
     .bind(id)
     .bind(rider)
     .bind(reason)
+    .bind(fee)
+    .bind(service)
+    .bind(earned)
     .fetch_optional(&st.pool)
     .await?;
     let ride = fetch_ride(&st, rider, id).await?.ok_or(ApiError::NotFound("ride_not_found"))?;
@@ -594,8 +637,13 @@ async fn cancel(
     }
     if let Some(driver) = updated {
         dispatch::rider_cancelled(&st, id, driver).await;
+        let charged = if fee > 0 {
+            "a cancellation fee applies because your driver was already on the way"
+        } else {
+            "you haven't been charged"
+        };
         notify(&st, rider, "trip", "ride_cancelled", "Ride cancelled",
-            &format!("{} to {} · you haven't been charged", ride.product_name, ride.dropoff.name), Some(id)).await;
+            &format!("{} to {} · {charged}", ride.product_name, ride.dropoff.name), Some(id)).await;
         // The Nova user it was booked for hears about it too.
         let passenger: Option<Uuid> = sqlx::query_scalar("SELECT passenger_user_id FROM rides WHERE id = $1")
             .bind(id)
@@ -608,6 +656,49 @@ async fn cancel(
         }
     }
     Ok(Json(ride))
+}
+
+/// Uber's rule: cancelling is free until the grace period after a driver accepts. After it, the
+/// rider pays the cancellation fee if the driver is waiting at the pickup or has been making
+/// progress towards it (closer now than when they got the offer). Returns (fee, service fee,
+/// driver's share), all zero when free.
+async fn cancellation_fee(st: &AppState, rider: Uuid, ride: Uuid) -> Result<(i64, i64, i64), ApiError> {
+    let row: Option<(String, Option<Uuid>, Option<i64>, i64, Option<i32>)> = sqlx::query_as(
+        "SELECT r.status, r.driver_id, extract(epoch FROM now() - r.accepted_at)::bigint,
+                COALESCE(r.upfront_fare_cents, r.fare_cents),
+                (SELECT o.distance_meters FROM ride_offers o
+                 WHERE o.ride_id = r.id AND o.driver_id = r.driver_id AND o.response = 'accepted' LIMIT 1)
+         FROM rides r WHERE r.id = $1 AND r.rider_id = $2",
+    )
+    .bind(ride)
+    .bind(rider)
+    .fetch_optional(&st.pool)
+    .await?;
+    let Some((status, Some(driver), Some(since_accept), upfront, offered_m)) = row else {
+        return Ok((0, 0, 0));
+    };
+    if !matches!(status.as_str(), "accepted" | "arriving") {
+        return Ok((0, 0, 0));
+    }
+    let card = crate::fare::card(&st.pool, ride).await?;
+    if since_accept < card.cancel_grace_secs as i64 {
+        return Ok((0, 0, 0));
+    }
+    let progressing = status == "arriving" || match (crate::drivers::last_location(st, driver).await, offered_m) {
+        (Some((lat, lng)), Some(offered)) => {
+            let now_m: Option<i32> = sqlx::query_scalar(
+                "SELECT ST_Distance(pickup, ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography)::int FROM rides WHERE id = $3",
+            )
+            .bind(lat)
+            .bind(lng)
+            .bind(ride)
+            .fetch_optional(&st.pool)
+            .await?;
+            now_m.is_some_and(|m| m < offered)
+        }
+        _ => false,
+    };
+    Ok(if progressing { crate::fare::cancellation(&card, upfront) } else { (0, 0, 0) })
 }
 
 // ---------- booking for someone else ----------

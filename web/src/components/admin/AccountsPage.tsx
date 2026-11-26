@@ -7,23 +7,16 @@ import {
   Avatar,
   Button,
   ConfirmAction,
-  EmptyState,
+  DataTable,
   Field,
   Modal,
   PageHeader,
-  Panel,
-  ROW,
-  SearchInput,
   Segmented,
   SelectInput,
   SidePanel,
   StatusTag,
-  TABLE,
-  TD,
-  TH,
   TextInput,
   notify,
-  rowProps,
 } from './ui'
 
 type Role = AdminUser['role']
@@ -78,9 +71,10 @@ export function AccountsPage({
           </Button>
         }
       />
-      <Panel
-        bodyClassName=""
-        title={
+      <DataTable
+        id="accounts"
+        label="Accounts"
+        tabs={
           <Segmented
             label="Account filter"
             value={filter}
@@ -94,52 +88,44 @@ export function AccountsPage({
             ]}
           />
         }
-        action={<SearchInput label="Search accounts" value={query} onChange={setQuery} placeholder="Name, email, phone" />}
-      >
-        {rows.length === 0 ? (
-          <EmptyState title="No accounts match" body="Try another filter or search." />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th className={TH}>Name</th>
-                  <th className={TH}>Contact</th>
-                  <th className={TH}>Role</th>
-                  <th className={`${TH} text-right`}>Trips booked</th>
-                  <th className={TH}>Joined</th>
-                  <th className={TH}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((u) => (
-                  <tr key={u.id} className={ROW} {...rowProps(() => onOpenChange(u.id), `Open ${fullName(u)}`)}>
-                    <td className={TD}>
-                      <div className="flex items-center gap-3">
-                        <Avatar text={initials(u)} />
-                        <span className="font-medium text-fg">
-                          {fullName(u)}
-                          {u.id === currentUserId && <span className="font-normal text-fg-3"> · you</span>}
-                        </span>
-                      </div>
-                    </td>
-                    <td className={TD}>
-                      <div className="text-fg-2">{u.email ?? <span className="text-fg-3">No email</span>}</div>
-                      <div className="font-mono text-xs text-fg-3">{u.phone_e164 ?? 'No phone'}</div>
-                    </td>
-                    <td className={`${TD} text-fg-2`}>{ROLE_LABEL[u.role]}</td>
-                    <td className={`${TD} text-right font-mono text-fg-2 tabular-nums`}>{count(u.rides_count)}</td>
-                    <td className={`${TD} whitespace-nowrap text-fg-2`}>{date(u.created_at)}</td>
-                    <td className={TD}>
-                      <StatusTag status={u.deactivated_at ? 'deactivated' : 'active'} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+        search={{ value: query, onChange: setQuery, placeholder: 'Name, email, phone' }}
+        rows={rows}
+        rowKey={(u) => u.id}
+        onRowClick={(u) => onOpenChange(u.id)}
+        rowLabel={(u) => `Open ${fullName(u)}`}
+        empty={{ title: 'No accounts match', body: 'Try another filter or search.' }}
+        summary={`${count(rows.length)} ${rows.length === 1 ? 'account' : 'accounts'} shown`}
+        columns={[
+          {
+            id: 'name',
+            header: 'Name',
+            hideable: false,
+            cell: (u) => (
+              <div className="flex items-center gap-3">
+                <Avatar text={initials(u)} />
+                <span className="font-medium text-fg">
+                  {fullName(u)}
+                  {u.id === currentUserId && <span className="font-normal text-fg-3"> · you</span>}
+                </span>
+              </div>
+            ),
+          },
+          {
+            id: 'contact',
+            header: 'Contact',
+            cell: (u) => (
+              <>
+                <div className="text-fg-2">{u.email ?? <span className="text-fg-3">No email</span>}</div>
+                <div className="font-mono text-xs text-fg-3">{u.phone_e164 ?? 'No phone'}</div>
+              </>
+            ),
+          },
+          { id: 'role', header: 'Role', className: 'text-fg-2', cell: (u) => ROLE_LABEL[u.role] },
+          { id: 'trips', header: 'Trips booked', align: 'right', className: 'font-mono text-fg-2 tabular-nums', cell: (u) => count(u.rides_count) },
+          { id: 'joined', header: 'Joined', className: 'whitespace-nowrap text-fg-2', cell: (u) => date(u.created_at) },
+          { id: 'status', header: 'Status', cell: (u) => <StatusTag status={u.deactivated_at ? 'deactivated' : 'active'} /> },
+        ]}
+      />
       <AccountPanel user={open} isSelf={open?.id === currentUserId} onClose={() => onOpenChange(null)} onChanged={onChanged} onOpenDriver={onOpenDriver} />
       <AccountForm open={creating} onOpenChange={setCreating} onSaved={onChanged} />
     </div>

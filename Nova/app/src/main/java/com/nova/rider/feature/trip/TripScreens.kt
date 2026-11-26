@@ -68,7 +68,6 @@ import com.nova.designsystem.components.WavyProgress
 import com.nova.designsystem.components.toShape
 import com.nova.designsystem.icons.NovaIcons
 import com.nova.designsystem.theme.NovaPalette
-import com.nova.rider.data.Sample
 import com.nova.rider.data.auth.GeoPoint
 import com.nova.rider.data.auth.Ride
 import com.nova.rider.data.trip.TripFormat
@@ -122,8 +121,9 @@ private fun FollowRide(nav: Navigator, here: Set<String>) {
                 }
                 return@LaunchedEffect
             }
-            kotlinx.coroutines.delay(3_000)
-            TripStore.refreshRide()
+            // The live socket pushes changes; HTTP stays as the slow safety net while it's open.
+            TripStore.awaitRideChange(ride.status)
+            if (TripStore.ride?.status == ride.status) TripStore.refreshRide()
         }
     }
 }
@@ -138,6 +138,19 @@ private fun metersBetween(a: GeoPoint, b: GeoPoint): Double {
     return 2 * r * kotlin.math.asin(kotlin.math.sqrt(h))
 }
 
+/**
+ * Seconds left from the server's live ETA, counted down each second between fixes. Null until a
+ * fix with `eta_seconds` arrives for this ride.
+ */
+@Composable
+private fun liveEtaSeconds(rideId: String?): Long? {
+    val fix = com.nova.rider.data.trip.LiveRide.fixFor(rideId) ?: return null
+    val eta = fix.etaSeconds ?: return null
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(fix) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(1_000) } }
+    return (eta - (now - fix.receivedAt) / 1_000).coerceAtLeast(0)
+}
+
 private fun secondsSince(iso: String?): Long =
     iso?.let { runCatching { java.time.Duration.between(java.time.Instant.parse(it), java.time.Instant.now()).seconds }.getOrNull() } ?: 0L
 
@@ -149,7 +162,9 @@ private fun callDriver(context: android.content.Context, phone: String) {
 @Composable
 private fun LiveRideMap(ride: Ride, toDropoff: Boolean, bottomPadding: androidx.compose.ui.unit.Dp) {
     val target = if (toDropoff) ride.dropoff.point else ride.pickup.point
-    val car = ride.driver?.location
+    // Live socket fix first; the last position the ride carried over HTTP until one arrives.
+    val fix = com.nova.rider.data.trip.LiveRide.fixFor(ride.id)
+    val car = fix?.point ?: ride.driver?.location
     val camera = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(target.toLatLng(), 15f) }
     LaunchedEffect(car?.lat, car?.lng, toDropoff) {
         camera.fitTo(listOfNotNull(car?.toLatLng(), target.toLatLng()), paddingPx = 160)
@@ -165,7 +180,7 @@ private fun LiveRideMap(ride: Ride, toDropoff: Boolean, bottomPadding: androidx.
         } else {
             PickupMarker(ride.pickup.point)
         }
-        car?.let { DriverCarMarker(it) }
+        car?.let { DriverCarMarker(it, fix?.heading) }
     }
 }
 
@@ -189,8 +204,12 @@ fun DriverEnRouteScreen(nav: Navigator) {
     val ride = TripStore.ride
     val driver = ride?.driver
     val here = ride?.status == "arriving"
-    // ETA from the car's live position (~30 km/h in town) until routing ETAs exist.
-    val etaMin = if (ride != null && driver?.location != null) ((metersBetween(driver.location, ride.pickup.point) / 500.0) + 0.99).toInt().coerceAtLeast(1) else null
+    // Traffic-aware ETA pushed with each fix; before the first one, a rough guess from the car's
+    // last position at town speed (~30 km/h).
+    val liveEta = liveEtaSeconds(ride?.id)
+    val carAt = com.nova.rider.data.trip.LiveRide.fixFor(ride?.id)?.point ?: driver?.location
+    val etaMin = liveEta?.let { ((it + 59) / 60).toInt().coerceAtLeast(1) }
+        ?: if (ride != null && carAt != null) ((metersBetween(carAt, ride.pickup.point) / 500.0) + 0.99).toInt().coerceAtLeast(1) else null
     Box(Modifier.fillMaxSize()) {
         if (ride != null) LiveRideMap(ride, toDropoff = false, bottomPadding = 360.dp) else EnRouteMap()
         Row(Modifier.statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -261,7 +280,12 @@ fun DriverEnRouteScreen(nav: Navigator) {
                 shapes = IconButtonDefaults.shapes(CircleShape, RoundedCornerShape(14.dp)),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.primaryContainer, contentColor = c.onPrimaryContainer),
             ) { Icon(NovaIcons.Phone, "Call driver") }
-            IconButton(onClick = { nav.go(Chat) }) { Icon(NovaIcons.Msg, "Message driver") }
+            IconButton(onClick = { nav.go(Chat) }) {
+                val unread = com.nova.rider.data.trip.RideChat.unread.takeIf { com.nova.rider.data.trip.RideChat.rideId == ride?.id } ?: 0
+                androidx.compose.material3.BadgedBox(badge = { if (unread > 0) androidx.compose.material3.Badge { Text("$unread") } }) {
+                    Icon(NovaIcons.Msg, if (unread > 0) "Message driver, $unread unread" else "Message driver")
+                }
+            }
             IconButton(onClick = { nav.go(ShareTrip) }) { Icon(NovaIcons.Share, "Share trip") }
             IconButton(onClick = { nav.go(CancelRide) }) { Icon(NovaIcons.Close, "Cancel ride") }
         }
@@ -273,13 +297,17 @@ fun OnTripScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     FollowRide(nav, setOf("in_progress"))
     val ride = TripStore.ride
-    // Time left from the quoted duration since pickup, until live routing ETAs exist.
+    // Time left: the live ETA to the drop-off; the quoted duration minus time since pickup until
+    // the first fix arrives.
     var elapsed by remember { mutableStateOf(secondsSince(ride?.startedAt)) }
     LaunchedEffect(ride?.startedAt) { while (true) { elapsed = secondsSince(ride?.startedAt); kotlinx.coroutines.delay(10_000) } }
     val total = ride?.durationSeconds?.coerceAtLeast(1) ?: 1
-    val left = (total - elapsed).coerceAtLeast(0)
+    val left = liveEtaSeconds(ride?.id) ?: (total - elapsed).coerceAtLeast(0)
     val arriveBy = remember(left / 60) { java.time.LocalTime.now().plusSeconds(left).format(java.time.format.DateTimeFormatter.ofPattern("H:mm")) }
-    val kmLeft = ride?.let { "%.1f km left".format(it.distanceMeters / 1000.0 * left / total) } ?: ""
+    // Road distance left from the server's routing; a share of the quoted route until it arrives.
+    val metersLeft = com.nova.rider.data.trip.LiveRide.fixFor(ride?.id)?.remainingMeters
+        ?: ride?.let { it.distanceMeters * left.coerceAtMost(total) / total }
+    val kmLeft = metersLeft?.let { "${TripFormat.distance(it)} left" } ?: ""
     Box(Modifier.fillMaxSize()) {
         if (ride != null) LiveRideMap(ride, toDropoff = true, bottomPadding = 300.dp)
         else MapBackdrop {
@@ -321,7 +349,7 @@ fun OnTripScreen(nav: Navigator) {
                         Text("On the way", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.primary)
                         Text(ride?.dropoff?.name ?: "", style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp, lineHeight = 32.sp), maxLines = 2)
                     }
-                    WavyProgress((elapsed.toFloat() / total).coerceIn(0.02f, 1f))
+                    WavyProgress((1f - left.toFloat() / total).coerceIn(0.02f, 1f))
                     DriverRow(driver = ride?.driver)
                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         ConnectedAction("Share", NovaIcons.Share, RoundedCornerShape(28.dp, 8.dp, 8.dp, 28.dp), c.primaryContainer, c.onPrimaryContainer, 1f) { nav.go(ShareTrip) }
@@ -375,9 +403,16 @@ fun TripCompleteScreen(nav: Navigator) {
                 Text(listOfNotNull("You've arrived", arrivedAt).joinToString(" · "), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.primaryContainer)
                 Text(ride?.let { TripFormat.money(it.fareCents, it.currency) } ?: "", style = MaterialTheme.typography.displayLarge, color = Color.White, maxLines = 1)
                 Text(
-                    listOfNotNull("Paid with $payment", ride?.let { "%.1f km".format(it.distanceMeters / 1000.0) }, minutes?.let { "$it min" }).joinToString(" · "),
+                    listOfNotNull("Paid with $payment", ride?.let { TripFormat.distance(it.distanceMeters) }, minutes?.let { "$it min" }).joinToString(" · "),
                     fontSize = 15.sp, color = c.primaryContainer,
                 )
+                ride?.let { com.nova.rider.data.trip.FareSummary.explanation(it) }?.let { why ->
+                    val upfront = ride.upfrontFareCents?.takeIf { ride.fareBasis == "actual" && it != ride.fareCents }
+                    Text(
+                        listOfNotNull(upfront?.let { "Upfront price ${TripFormat.money(it, ride.currency)}." }, why).joinToString(" "),
+                        fontSize = 14.sp, lineHeight = 20.sp, color = Color.White, modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
         }
         Column(
@@ -424,7 +459,7 @@ fun TripCompleteScreen(nav: Navigator) {
             }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NovaOutlinedButton("Receipt", onClick = { nav.go(Receipt) }, height = 64.dp)
+                NovaOutlinedButton("Receipt", onClick = { ride?.let { nav.go(Receipt(it.id)) } }, height = 64.dp)
                 val amt = tipAmounts[tip]
                 NovaButton(
                     if (amt > 0) "Submit & tip ${TripFormat.money(amt * unit, currency)}" else "Submit rating",

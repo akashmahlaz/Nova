@@ -1,9 +1,11 @@
 //! Live channel: one WebSocket per signed-in app, used to push events the moment they happen
-//! (ride offers to drivers, ride status to riders; chat and calls later).
+//! (ride offers to drivers, ride status and driver location to riders, chat messages; see chat.rs).
 //!
 //! `GET /v1/ws` with `Authorization: Bearer <access token>` (header only, so tokens never land in
-//! URL logs). The server only pushes; the apps act through the normal HTTP endpoints, which keeps
-//! every write validated and idempotent in one place. If the socket drops, nothing is lost: each
+//! URL logs). The server pushes events; the one thing apps send is the driver's GPS, as
+//! `{"type":"location","lat":..,"lng":..}` every few seconds, which is cheaper than an HTTP
+//! request per fix. Every other action goes through the normal HTTP endpoints, which keeps
+//! writes validated and idempotent in one place. Riders get `driver_location` events back. If the socket drops, nothing is lost: each
 //! app re-reads its state over HTTP when it reconnects (the server sends `hello` on connect).
 //!
 //! Connections live in this process's memory. Running several API instances needs a Redis
@@ -32,7 +34,18 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{auth::require_user_id, error::ApiError, AppState};
+use crate::{auth::require_user_id, drivers, error::ApiError, AppState};
+
+/// What an app may send over the socket.
+#[derive(serde::Deserialize)]
+struct Inbound {
+    #[serde(rename = "type")]
+    kind: String,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    heading: Option<f64>,
+    speed: Option<f64>,
+}
 
 /// Pings keep mobile networks and proxies from closing an idle socket.
 const PING_EVERY: Duration = Duration::from_secs(25);
@@ -99,6 +112,8 @@ async fn serve(st: AppState, user: Uuid, mut socket: WebSocket) {
     let (id, mut outbox) = st.hub.add(user);
     tracing::debug!(%user, "live socket open");
     let mut ping = tokio::time::interval(PING_EVERY);
+    // Checked on the first location ping, so rider sockets never pay for the lookup.
+    let mut is_driver: Option<bool> = None;
     ping.tick().await;
     if socket.send(Message::Text(json!({ "type": "hello" }).to_string().into())).await.is_ok() {
         loop {
@@ -108,8 +123,12 @@ async fn serve(st: AppState, user: Uuid, mut socket: WebSocket) {
                     None => break,
                 },
                 incoming = socket.recv() => match incoming {
-                    // The apps don't send anything yet; reads only notice a close.
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(reply) = handle(&st, user, &mut is_driver, &text).await {
+                            if socket.send(Message::Text(reply.to_string().into())).await.is_err() { break }
+                        }
+                    }
                     Some(Ok(_)) => {}
                 },
                 _ = ping.tick() => if socket.send(Message::Ping(Default::default())).await.is_err() { break },
@@ -118,4 +137,31 @@ async fn serve(st: AppState, user: Uuid, mut socket: WebSocket) {
     }
     st.hub.remove(user, id);
     tracing::debug!(%user, "live socket closed");
+}
+
+/// Handles one message from an app. Replies only with errors, so a ping costs no downstream bytes.
+async fn handle(st: &AppState, user: Uuid, is_driver: &mut Option<bool>, text: &str) -> Option<Value> {
+    let msg: Inbound = serde_json::from_str(text).ok()?;
+    if msg.kind != "location" {
+        return None;
+    }
+    if is_driver.is_none() {
+        let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_optional(&st.pool)
+            .await
+            .ok()
+            .flatten();
+        *is_driver = Some(role.as_deref() == Some("driver"));
+    }
+    if *is_driver != Some(true) {
+        return Some(json!({ "type": "error", "code": "not_driver_account" }));
+    }
+    let (Some(lat), Some(lng)) = (msg.lat, msg.lng) else {
+        return Some(json!({ "type": "error", "code": "invalid_location" }));
+    };
+    match drivers::ingest_location(st, user, drivers::LatLng { lat, lng, heading: msg.heading, speed: msg.speed }).await {
+        Ok(_) => None,
+        Err(err) => Some(json!({ "type": "error", "code": err.code() })),
+    }
 }

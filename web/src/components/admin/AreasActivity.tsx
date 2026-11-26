@@ -2,56 +2,49 @@ import { useEffect, useMemo, useState } from 'react'
 import { type AdminServiceArea, type AuditEntry, novaAdminApi } from '../../lib/api'
 import { formatError } from '../../lib/errors'
 import { count, date, time } from '../../lib/format'
-import { Button, ConfirmAction, EmptyState, PageHeader, Panel, Segmented, TABLE, TD, TH, Tag, notify } from './ui'
+import { PricingPanel } from './PricingPanel'
+import { Button, ConfirmAction, DataTable, EmptyState, PageHeader, Panel, Segmented, Tag, notify } from './ui'
 
 export function AreasPage({ areas, onChanged }: { areas: AdminServiceArea[]; onChanged: () => Promise<void> }) {
   const [pending, setPending] = useState<AdminServiceArea | null>(null)
+  const [pricing, setPricing] = useState<string | null>(null)
   const active = areas.filter((a) => a.active).length
   return (
     <div className="space-y-6">
       <PageHeader title="Service areas" meta={`${count(active)} of ${count(areas.length)} taking bookings`} />
-      <Panel bodyClassName="">
-        {areas.length === 0 ? (
-          <EmptyState title="No service areas yet" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className={TABLE}>
-              <thead>
-                <tr>
-                  <th className={TH}>Area</th>
-                  <th className={TH}>Region</th>
-                  <th className={TH}>Currency and time zone</th>
-                  <th className={`${TH} text-right`}>Fare rates</th>
-                  <th className={`${TH} text-right`}>Trips</th>
-                  <th className={TH}>Bookings</th>
-                  <th className={TH}>
-                    <span className="sr-only">Action</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {areas.map((a) => (
-                  <tr key={a.id} className="[&:last-child>td]:border-b-0">
-                    <td className={`${TD} font-medium text-fg`}>{a.name}</td>
-                    <td className={`${TD} font-mono text-fg-2`}>{a.region_code}</td>
-                    <td className={`${TD} text-fg-2`}>
-                      {a.currency} · {a.timezone}
-                    </td>
-                    <td className={`${TD} text-right font-mono text-fg-2 tabular-nums`}>{count(a.rate_count)}</td>
-                    <td className={`${TD} text-right font-mono text-fg-2 tabular-nums`}>{count(a.ride_count)}</td>
-                    <td className={TD}>{a.active ? <Tag tone="live">Open</Tag> : <Tag>Paused</Tag>}</td>
-                    <td className={`${TD} text-right`}>
-                      <Button size="sm" variant={a.active ? 'danger' : 'secondary'} onClick={() => setPending(a)}>
-                        {a.active ? 'Pause bookings' : 'Open for bookings'}
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
+      <DataTable
+        id="areas"
+        label="Service areas"
+        rows={areas}
+        rowKey={(a) => a.id}
+        empty={{ title: 'No service areas yet' }}
+        summary={`${count(active)} of ${count(areas.length)} taking bookings`}
+        columns={[
+          { id: 'area', header: 'Area', hideable: false, className: 'font-medium text-fg', cell: (a) => a.name },
+          { id: 'region', header: 'Region', className: 'font-mono text-fg-2', cell: (a) => a.region_code },
+          { id: 'zone', header: 'Currency and time zone', className: 'text-fg-2', cell: (a) => `${a.currency} · ${a.timezone}` },
+          { id: 'rates', header: 'Fare rates', align: 'right', className: 'font-mono text-fg-2 tabular-nums', cell: (a) => count(a.rate_count) },
+          { id: 'trips', header: 'Trips', align: 'right', className: 'font-mono text-fg-2 tabular-nums', cell: (a) => count(a.ride_count) },
+          { id: 'bookings', header: 'Bookings', cell: (a) => (a.active ? <Tag tone="live">Open</Tag> : <Tag>Paused</Tag>) },
+          {
+            id: 'actions',
+            header: 'Actions',
+            hideable: false,
+            align: 'right',
+            cell: (a) => (
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setPricing(a.id)}>
+                  Prices and rules
+                </Button>
+                <Button size="sm" variant={a.active ? 'danger' : 'secondary'} onClick={() => setPending(a)}>
+                  {a.active ? 'Pause bookings' : 'Open for bookings'}
+                </Button>
+              </div>
+            ),
+          },
+        ]}
+      />
+      <PricingPanel areaId={pricing} onClose={() => setPricing(null)} />
       {pending && (
         <ConfirmAction
           open

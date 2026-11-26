@@ -275,7 +275,7 @@ fun Onboarding1Screen(nav: Navigator) {
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Box(Modifier.size(10.dp).clip(CircleShape).background(NovaTheme.colors.volt))
-                Text("Comfort · $28.40", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+                Text("Comfort · ${com.nova.rider.data.trip.TripFormat.money(2840, com.nova.rider.data.trip.TripFormat.localCurrencyCode())}", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
             }
             ShapeBadge(NovaShape.Burst, 56.dp, NovaTheme.colors.coralBright, Modifier.align(Alignment.TopEnd).offset((-44).dp, 50.dp))
         },

@@ -10,7 +10,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.shape.GenericShape
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import com.google.maps.android.SphericalUtil
+import com.google.maps.android.compose.MarkerState
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -128,16 +136,52 @@ fun DestinationMarker(at: GeoPoint) {
     }
 }
 
-/** The assigned driver's car, at their last reported position. */
+/**
+ * The assigned driver's car. Fixes arrive about every 4 s, so the car glides along the great
+ * circle between them (linear, a little shorter than the fix interval so it never lags behind)
+ * and turns to [heading] the short way round. Without a heading the bearing of travel is used.
+ * Jumps over 2 km (first fix, reconnect) snap instead of sliding across town.
+ */
 @Composable
 @GoogleMapComposable
-fun DriverCarMarker(at: GeoPoint) {
+fun DriverCarMarker(at: GeoPoint, heading: Float? = null) {
     val fill = MaterialTheme.colorScheme.primary
-    MarkerComposable(fill, state = rememberUpdatedMarkerState(at.toLatLng()), anchor = Offset(0.5f, 0.5f)) {
-        Box(Modifier.size(36.dp).clip(CircleShape).background(fill).border(3.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) {
-            androidx.compose.material3.Icon(com.nova.designsystem.icons.NovaIcons.Car, null, Modifier.size(20.dp), tint = Color.White)
+    val state = remember { MarkerState(at.toLatLng()) }
+    val rotation = remember { Animatable(heading ?: 0f) }
+    LaunchedEffect(at.lat, at.lng) {
+        val from = state.position
+        val to = at.toLatLng()
+        val moved = SphericalUtil.computeDistanceBetween(from, to)
+        if (moved < 0.5) return@LaunchedEffect
+        if (heading == null && moved > 5) launch { rotation.turnTo(SphericalUtil.computeHeading(from, to).toFloat()) }
+        if (moved > 2_000) { state.position = to; return@LaunchedEffect }
+        Animatable(0f).animateTo(1f, tween(3_600, easing = LinearEasing)) {
+            state.position = SphericalUtil.interpolate(from, to, value.toDouble())
         }
     }
+    LaunchedEffect(heading) { heading?.let { rotation.turnTo(it) } }
+    MarkerComposable(
+        fill, state = state, anchor = Offset(0.5f, 0.5f), flat = true, rotation = rotation.value,
+        contentDescription = "Your driver",
+    ) {
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            // Nose: shows which way the car is facing once the marker is rotated.
+            Box(
+                Modifier.align(Alignment.TopCenter).size(10.dp)
+                    .clip(GenericShape { size, _ -> moveTo(size.width / 2, 0f); lineTo(size.width, size.height); lineTo(0f, size.height); close() })
+                    .background(fill),
+            )
+            Box(Modifier.size(34.dp).clip(CircleShape).background(fill).border(3.dp, Color.White, CircleShape), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.Icon(com.nova.designsystem.icons.NovaIcons.Car, null, Modifier.size(18.dp), tint = Color.White)
+            }
+        }
+    }
+}
+
+/** Turns to [degrees] by the shortest way (350° -> 10° is +20°, not -340°). */
+private suspend fun Animatable<Float, *>.turnTo(degrees: Float) {
+    val delta = ((degrees - value) % 360f + 540f) % 360f - 180f
+    animateTo(value + delta, tween(600))
 }
 
 /** Route line from a Google encoded polyline (as returned by our /v1/rides/quote). */
