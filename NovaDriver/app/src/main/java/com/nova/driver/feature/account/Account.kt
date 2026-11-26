@@ -335,7 +335,7 @@ fun PayoutsScreen(nav: Navigator) {
             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column {
                     Text("Earned this week", fontSize = 14.sp, fontWeight = FontWeight.ExtraBold, color = ink)
-                    Text(money(week).takeIf { week?.currency != null } ?: formatMoney(0, "NZD").takeIf { false } ?: "No trips yet", fontSize = 48.sp, lineHeight = 52.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp, color = ink, maxLines = 1)
+                    Text(money(week).takeIf { week?.currency != null } ?: "No trips yet", fontSize = 48.sp, lineHeight = 52.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-0.8).sp, color = ink, maxLines = 1)
                     Text("${week?.trips ?: 0} trips · ${hours(week?.onlineSeconds ?: 0)} online", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ink)
                 }
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(ink.copy(alpha = 0.08f)).padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {

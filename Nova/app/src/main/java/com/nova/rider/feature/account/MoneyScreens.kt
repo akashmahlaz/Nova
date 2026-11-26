@@ -367,7 +367,7 @@ fun WalletScreen(nav: Navigator) {
             val methods = listOf(
                 Triple("Google Pay", if (default == 0) "Default" else "Tap to make default", "GPay"),
                 Triple("Visa ···· 4417", "Expires 08/28", "card"),
-                Triple("Mastercard ···· 0932", if (default == 2) "Default" else null, "$"),
+                Triple("Mastercard ···· 0932", if (default == 2) "Default" else null, "credit"),
             )
             methods.forEachIndexed { i, (name, sub, badge) ->
                 val on = i == default
@@ -381,7 +381,7 @@ fun WalletScreen(nav: Navigator) {
                     when (badge) {
                         "GPay" -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.primary), contentAlignment = Alignment.Center) { Text("GPay", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Color.White) }
                         "card" -> IconTile(NovaIcons.Card, c.surfaceContainerHighest, c.onSurface)
-                        else -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.tertiaryContainer), contentAlignment = Alignment.Center) { Text("$", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
+                        else -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.tertiaryContainer), contentAlignment = Alignment.Center) { Text(com.nova.rider.data.trip.TripFormat.localCurrencySymbol(), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
                     }
                     Column(Modifier.weight(1f)) {
                         Text(name, fontSize = 16.sp, fontWeight = if (on) FontWeight.ExtraBold else FontWeight.Bold, color = fg)

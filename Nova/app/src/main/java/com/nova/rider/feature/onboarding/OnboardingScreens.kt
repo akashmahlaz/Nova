@@ -393,14 +393,19 @@ fun Onboarding3Screen(nav: Navigator) {
                 }
                 PayCard(RoundedCornerShape(8.dp), Color.White) {
                     Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiaryContainer), contentAlignment = Alignment.Center) {
-                        Text("$", color = MaterialTheme.colorScheme.tertiary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+                        Text(com.nova.rider.data.trip.TripFormat.localCurrencySymbol(), color = MaterialTheme.colorScheme.tertiary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
                     }
                     Text("Visa ···· 4417", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
                 }
                 PayCard(RoundedCornerShape(8.dp, 8.dp, 28.dp, 28.dp), NovaPalette.Ink) {
                     ShapeBadge(NovaShape.Burst, 40.dp, NovaTheme.colors.volt)
                     Text("Nova Credit", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-                    Text("$42.00", color = NovaTheme.colors.volt, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        com.nova.rider.data.trip.TripFormat.money(4200, com.nova.rider.data.trip.TripFormat.localCurrencyCode()),
+                        color = NovaTheme.colors.volt,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
                 }
             }
         },

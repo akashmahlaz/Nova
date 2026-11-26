@@ -262,7 +262,7 @@ fun PaymentFailedScreen(nav: Navigator) {
                     when (i) {
                         0 -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.primary), contentAlignment = Alignment.Center) { Text("VISA", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = Color.White) }
                         1 -> IconTile(NovaIcons.Wallet, c.surfaceContainerHighest, c.onSurface)
-                        else -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.tertiaryContainer), contentAlignment = Alignment.Center) { Text("$", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
+                        else -> Box(Modifier.size(40.dp).clip(RoundedCornerShape(14.dp)).background(c.tertiaryContainer), contentAlignment = Alignment.Center) { Text(com.nova.rider.data.trip.TripFormat.localCurrencySymbol(), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = c.onTertiaryContainer) }
                     }
                     Column(Modifier.weight(1f)) {
                         Text(title, fontSize = 16.sp, fontWeight = if (on) FontWeight.ExtraBold else FontWeight.Bold, color = fg)

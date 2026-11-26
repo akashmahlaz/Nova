@@ -381,9 +381,9 @@ fun OnlinePill(online: Boolean, onClick: () -> Unit, modifier: Modifier = Modifi
     }
 }
 
-/** Money earned in a period, or $0.00 before the first trip. */
+/** Money earned in a period, or local zero before the first trip. */
 fun earnedLabel(e: com.nova.driver.data.api.Earnings?): String =
-    com.nova.driver.data.formatMoney(e?.totalCents ?: 0, e?.currency ?: "NZD")
+    com.nova.driver.data.formatMoney(e?.totalCents ?: 0, e?.currency ?: com.nova.driver.data.localCurrencyCode())
 
 /** "Today $286.50" chip at the top right of the driving map. */
 @Composable

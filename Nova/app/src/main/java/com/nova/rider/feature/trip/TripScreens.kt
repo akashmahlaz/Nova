@@ -352,7 +352,7 @@ fun TripCompleteScreen(nav: Navigator) {
     val c = MaterialTheme.colorScheme
     val ride = TripStore.ride
     val driverName = ride?.driver?.firstName ?: "your driver"
-    val currency = ride?.currency ?: "NZD"
+    val currency = ride?.currency ?: com.nova.rider.data.trip.TripFormat.localCurrencyCode()
     val unit = remember(currency) {
         val digits = runCatching { java.util.Currency.getInstance(currency).defaultFractionDigits }.getOrNull()?.coerceAtLeast(0) ?: 2
         (1..digits).fold(1L) { acc, _ -> acc * 10 }

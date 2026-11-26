@@ -330,6 +330,9 @@ async fn resolve_ip_geo(st: &AppState, headers: &HeaderMap) -> Option<IpGeo> {
 /// - `q` empty + `lat`/`lng` present -> Google Places `searchNearby` (`locality`) around GPS
 /// - `q` empty + no GPS -> IP geolocation (`ipwho.is`, cached in Redis) + `searchNearby` when in
 ///   the same country, falling back to `searchText` (`locality`) for `country_name` / `country`
+///
+/// NOTE: Never query `service_areas` here — `service_areas` are pricing/dispatch geofences
+/// (e.g. "Punjab (dev)"), not a worldwide list of driver cities.
 async fn cities(
     State(st): State<AppState>,
     headers: HeaderMap,

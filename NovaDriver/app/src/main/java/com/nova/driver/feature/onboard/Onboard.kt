@@ -199,7 +199,7 @@ fun WelcomeScreen(nav: Navigator) {
             Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(32.dp)).background(NovaTheme.colors.cta)) {
                 ShapeBadge(NovaShape.Burst, 150.dp, NovaTheme.colors.onCta.copy(alpha = 0.08f), Modifier.align(Alignment.TopEnd).offset(40.dp, (-30).dp))
                 Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                    Text("$", fontSize = 44.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold, color = NovaTheme.colors.onCta)
+                    Text(com.nova.driver.data.localCurrencySymbol(), fontSize = 44.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold, color = NovaTheme.colors.onCta)
                     Text("Cash out every day", fontSize = 22.sp, lineHeight = 26.sp, fontWeight = FontWeight.ExtraBold, color = NovaTheme.colors.onCta)
                 }
             }
@@ -224,6 +224,11 @@ private fun ColumnScope.PerkTile(text: String, icon: ImageVector, bg: Color, fg:
     }
 }
 
+// IMPORTANT: Keep onboarding 100% global.
+// - Phone country codes must always use `CountryPickerSheet` + `PhoneRegions` (never a static prefix).
+// - Cities must always come from `DriverApi.cities` (GPS/IP nearby or Google Places `(cities)`),
+//   never a hardcoded list or `service_areas` geofence names.
+// - Never hardcode NZ-only licence/tax/bank validation (e.g. NZTA, IRD, 15-16 digit bank rules).
 @Composable
 private fun CountryCodeButton(country: com.nova.driver.data.auth.Country, onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme

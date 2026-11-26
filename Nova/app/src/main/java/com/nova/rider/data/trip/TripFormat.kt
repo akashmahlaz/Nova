@@ -10,8 +10,19 @@ import kotlin.math.roundToLong
 /**
  * Display formatting for trip numbers. The server sends raw units (cents + ISO currency, metres,
  * seconds) and the app formats for the rider's locale, so one API serves every market.
+ *
+ * IMPORTANT: Never hardcode currency symbols ("$", "₹") or fallback ISO codes ("NZD", "INR")
+ * anywhere in UI screens; always use [money], [localCurrencyCode], or [localCurrencySymbol].
  */
 object TripFormat {
+    fun localCurrencyCode(locale: Locale = Locale.getDefault()): String =
+        runCatching { NumberFormat.getCurrencyInstance(locale).currency?.currencyCode }.getOrNull() ?: "USD"
+
+    fun localCurrencySymbol(locale: Locale = Locale.getDefault()): String {
+        val cur = runCatching { Currency.getInstance(localCurrencyCode(locale)) }.getOrNull()
+        return cur?.getSymbol(locale) ?: "$"
+    }
+
     /**
      * Minor units + ISO 4217 code -> the rider's local style: 2840 + "NZD" -> "$28.40" on an
      * en-NZ phone, "NZ$28.40" elsewhere; 24500 + "INR" -> "₹245.00"; 2840 + "JPY" -> "¥2,840".

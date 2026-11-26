@@ -7,6 +7,20 @@ import java.text.NumberFormat
 import java.util.Currency
 import java.util.Locale
 
+// IMPORTANT: Never hardcode currency symbols ("$", "₹") or fallback ISO codes ("NZD", "INR").
+// Real amounts must format with the server's ISO 4217 `currency`; placeholders before data
+// loads must use `localCurrencyCode()` / `localCurrencySymbol()` from `Locale.getDefault()`.
+
+/** ISO 4217 currency code for the device locale (fallback when server hasn't sent one yet). */
+fun localCurrencyCode(locale: Locale = Locale.getDefault()): String =
+    runCatching { NumberFormat.getCurrencyInstance(locale).currency?.currencyCode }.getOrNull() ?: "USD"
+
+/** Local currency symbol from the device locale (e.g. ₹, $, €, £). */
+fun localCurrencySymbol(locale: Locale = Locale.getDefault()): String {
+    val cur = runCatching { Currency.getInstance(localCurrencyCode(locale)) }.getOrNull()
+    return cur?.getSymbol(locale) ?: "$"
+}
+
 /** Money from minor units in any ISO 4217 currency (digits come from the currency, not a guess). */
 fun formatMoney(minor: Long, currency: String): String {
     val cur = runCatching { Currency.getInstance(currency) }.getOrNull() ?: return "$currency ${"%.2f".format(minor / 100.0)}"
